@@ -32,14 +32,11 @@ from .const import (
     CONF_AC3_SOC,
     CONF_CHARGE_LIMIT,
     CONF_CHARGING_POWER,
-    CONF_LEGACY_MASK,
-    CONF_LEGACY_RATE,
     CONF_SHP_GRID_POWER,
     CONF_SHP_HOME_POWER,
     CONF_SITE_GRID_POWER,
     CONF_SOLAR_POWER,
     DEFAULT_OPTIONS,
-    DOMAIN,
     MODE_CONTROL,
     MODE_OBSERVE,
     OPT_EXPORT_GAIN,
@@ -104,7 +101,7 @@ class TelemetrySnapshot:
 
 
 class EcoFlowSurplusController:
-    """Event-driven port of the deployed EcoFlow solar-surplus v2.3 automation."""
+    """Event-driven EcoFlow solar-surplus controller."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
@@ -210,7 +207,7 @@ class EcoFlowSurplusController:
 
         self._last_snapshot = self._snapshot()
         self._last_action = (
-            "observing_legacy_controller"
+            "observing_without_service_calls"
             if not self.is_control_mode
             else "startup_preserved_awaiting_fresh_grid"
         )
@@ -269,7 +266,7 @@ class EcoFlowSurplusController:
             self.hass.async_create_task(self.async_handle_trigger("reassert"))
 
     async def async_handle_trigger(self, trigger_id: str) -> None:
-        """Handle one controller trigger with automation mode=single semantics."""
+        """Handle one controller trigger with mode-single semantics."""
         if self._lock.locked():
             _LOGGER.debug("Skipping %s trigger because controller is busy", trigger_id)
             return
@@ -475,14 +472,6 @@ class EcoFlowSurplusController:
 
     async def _async_load_command_state(self) -> None:
         stored = await self._store.async_load()
-
-        # Observe mode always follows the currently deployed controller rather than
-        # a command previously owned by this integration. This makes rollback from
-        # Control to Observe deterministic and prevents stale internal command memory.
-        if not self.is_control_mode:
-            self._sync_observed_command_state()
-            await self._async_save_command_state()
-            return
         if isinstance(stored, dict):
             try:
                 candidate = CommandState(
@@ -492,57 +481,18 @@ class EcoFlowSurplusController:
                 )
             except (TypeError, ValueError):
                 candidate = None
-            if candidate is not None and candidate.owned:
+            if candidate is not None:
                 self.command = candidate
-                return
+                if candidate.owned:
+                    return
 
-        legacy = self._read_legacy_command_state()
-        if legacy is not None:
-            self.command = legacy
-            await self._async_save_command_state()
-            return
-
-        if isinstance(stored, dict):
-            try:
-                self.command = CommandState(
-                    mask=int(stored.get("mask", 0)) & 0b111,
-                    rate_w=int(stored.get("rate_w", 500)),
-                    owned=False,
-                )
-                return
-            except (TypeError, ValueError):
-                pass
-
-        inferred_mask = 0
-        for bit, entity_id in zip((1, 2, 4), self.force_entities, strict=True):
-            if self.hass.states.is_state(entity_id, "on"):
-                inferred_mask |= bit
-        rate = _state_float(self.hass.states.get(self.entry.data[CONF_CHARGING_POWER]))
-        self.command = CommandState(
-            mask=inferred_mask,
-            rate_w=int(rate if rate is not None else 500),
-            owned=False,
-        )
+        self._sync_observed_command_state()
+        if self.is_control_mode:
+            self.command.owned = False
         await self._async_save_command_state()
 
-    def _read_legacy_command_state(self) -> CommandState | None:
-        mask_entity = self.entry.data.get(CONF_LEGACY_MASK)
-        rate_entity = self.entry.data.get(CONF_LEGACY_RATE)
-        if not mask_entity or not rate_entity:
-            return None
-        mask = _state_float(self.hass.states.get(mask_entity))
-        rate = _state_float(self.hass.states.get(rate_entity))
-        if mask is None or rate is None:
-            return None
-        return CommandState(mask=int(mask) & 0b111, rate_w=int(rate), owned=False)
-
     def _sync_observed_command_state(self) -> None:
-        """Mirror the active legacy controller without taking ownership."""
-        legacy = self._read_legacy_command_state()
-        if legacy is not None:
-            self.command = legacy
-            return
-
+        """Infer the physical EcoFlow command state without issuing service calls."""
         inferred_mask = 0
         for bit, entity_id in zip((1, 2, 4), self.force_entities, strict=True):
             if self.hass.states.is_state(entity_id, "on"):
@@ -558,7 +508,11 @@ class EcoFlowSurplusController:
 
     async def _async_save_command_state(self) -> None:
         await self._store.async_save(
-            {"mask": self.command.mask, "rate_w": self.command.rate_w, "owned": self.command.owned}
+            {
+                "mask": self.command.mask,
+                "rate_w": self.command.rate_w,
+                "owned": self.command.owned,
+            }
         )
 
     def _normalize_command_rate(self, settings: ControllerSettings) -> None:
@@ -650,8 +604,6 @@ class EcoFlowSurplusController:
         )
 
     def _physical_recovery_condition(self) -> bool:
-        # The timer also runs in Observe mode so shadow validation covers the
-        # deployed controller's physical-recovery path without issuing commands.
         if self.command.mask <= 0:
             return False
         snapshot = self._snapshot()
