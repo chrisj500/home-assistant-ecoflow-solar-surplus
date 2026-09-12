@@ -2,22 +2,18 @@
 
 A Home Assistant custom integration for controlling EcoFlow Smart Home Panel 2 Force Charge from measured solar surplus.
 
-> **Status:** pre-release. Install in **Observe only** mode first and validate behavior before enabling control.
-
 ## What it does
 
-The integration watches an authoritative whole-site grid-power sensor and adjusts EcoFlow Force Charge so available solar surplus is directed into battery storage while minimizing unintended grid import. It supports three EcoFlow battery channels, runtime charging-rate limits, stale-data safety, sunrise/sunset handling, one-way recovery, and a shadow/observe mode for safe migration from an existing automation.
+The integration watches an authoritative whole-site grid-power sensor and adjusts EcoFlow Force Charge so available solar surplus is directed into battery storage while minimizing unintended grid import. It supports three EcoFlow battery channels, runtime charging-rate limits, stale-data safety, sunrise/sunset handling, one-way recovery, retained-channel protection, lowest-SOC DPU selection, import braking, and rate damping.
 
-## Safety-first migration
+The controller also exposes diagnostic entities and keeps a persistent rolling history of the most recent 50 fresh-grid decisions. Decision history survives integration reloads and Home Assistant restarts and includes session timestamps so troubleshooting can distinguish activity across controller sessions.
 
-1. Install the integration through HACS as a custom repository.
-2. Configure the required Home Assistant entities.
-3. Leave **Operating mode** set to **Observe only**.
-4. Compare proposed controller actions with the existing automation under real conditions.
-5. Disable the legacy controller only after parity is confirmed.
-6. Switch this integration to **Control EcoFlow**.
+## Operating modes
 
-Returning the integration to **Observe only** provides a simple rollback path.
+- **Observe only** computes controller decisions without issuing EcoFlow service calls. Use it when validating configuration or troubleshooting without changing charging state.
+- **Control EcoFlow** allows the integration to set charging power and Force Charge switches.
+
+Only one controller should write to the EcoFlow charging controls at a time.
 
 ## Requirements
 
@@ -30,9 +26,13 @@ Returning the integration to **Observe only** provides a simple rollback path.
 
 Until the repository is submitted to the default HACS catalog, add this repository as a custom repository in HACS with category **Integration**, install **EcoFlow Solar Surplus Controller**, restart Home Assistant, and then add it from **Settings → Devices & services**.
 
+## Diagnostics
+
+The integration exposes controller health, command and desired masks, target and physical charging power, decision policy, last decision time, and related telemetry. Home Assistant's downloaded integration diagnostics include the persistent 50-entry decision history.
+
 ## Development principles
 
-The controller intentionally separates pure decision logic from Home Assistant service calls. New control behavior should be covered by regression tests before it can affect live devices. The integration also starts in observe mode by default so installing it does not immediately take control of charging.
+The controller intentionally separates pure decision logic from Home Assistant service calls. New control behavior should be covered by regression tests before it can affect live devices. Observe mode remains available as a no-write diagnostic mode.
 
 ## License
 
