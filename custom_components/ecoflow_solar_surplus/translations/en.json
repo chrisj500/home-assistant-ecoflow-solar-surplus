@@ -80,7 +80,7 @@
     "step": {
       "init": {
         "title": "Controller options",
-        "description": "Keep Operating mode set to Observe while the legacy YAML automation is active. Switch to Control only after disabling the legacy automation so two controllers never write to EcoFlow at the same time.",
+        "description": "Observe computes decisions without writing to EcoFlow. Control allows the integration to change charging power and Force Charge switches. Only one controller should write to EcoFlow charging controls at a time.",
         "data": {
           "operating_mode": "Operating mode",
           "preferred_import_w": "Preferred grid import",
@@ -90,7 +90,7 @@
         },
         "data_description": {
           "operating_mode": "Observe computes decisions without service calls. Control is allowed to change EcoFlow charging rate and Force Charge switches.",
-          "preferred_import_w": "Closed-loop grid target. The v2.3 baseline intentionally prefers a small amount of import.",
+          "preferred_import_w": "Closed-loop grid target. The controller intentionally prefers a small amount of import.",
           "start_export_w": "Export required before starting a new Force Charge session.",
           "maximum_rate_w": "Software ceiling. The integration also clamps to the number entity's runtime hardware maximum.",
           "minimum_solar_w": "Below this production level the controller will not continue solar-surplus Force Charge."
@@ -98,7 +98,7 @@
       },
       "advanced": {
         "title": "Advanced controller tuning",
-        "description": "These defaults match the deployed v2.3 controller. Change them only when you intentionally want different control behavior.",
+        "description": "These defaults match the validated controller behavior. Change them only when you intentionally want different control behavior.",
         "data": {
           "minimum_rate_w": "Minimum charge rate",
           "rate_step_w": "Charge-rate step",
