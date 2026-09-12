@@ -1,0 +1,14 @@
+{
+  "domain": "ecoflow_solar_surplus",
+  "name": "EcoFlow Solar Surplus Controller",
+  "codeowners": ["@chrisj500"],
+  "config_flow": true,
+  "dependencies": ["sun"],
+  "documentation": "https://github.com/chrisj500/home-assistant-ecoflow-solar-surplus",
+  "integration_type": "helper",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/chrisj500/home-assistant-ecoflow-solar-surplus/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}
