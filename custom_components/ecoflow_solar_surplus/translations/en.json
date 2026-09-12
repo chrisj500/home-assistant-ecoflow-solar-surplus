@@ -1,0 +1,154 @@
+{
+  "title": "EcoFlow Solar Surplus Controller",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Site power sources",
+        "description": "Select the authoritative Enphase-style site grid and solar production sensors. Power sensors must report W or kW.",
+        "data": {
+          "site_grid_power": "Site net grid power",
+          "solar_power": "Solar production power"
+        },
+        "data_description": {
+          "site_grid_power": "Signed net grid power. Negative values must mean export and positive values import.",
+          "solar_power": "Current solar production used to gate daytime control."
+        }
+      },
+      "ecoflow": {
+        "title": "EcoFlow Smart Home Panel",
+        "description": "Select the EcoFlow panel telemetry and charging controls used by the controller.",
+        "data": {
+          "shp_grid_power": "SHP grid power",
+          "shp_home_power": "SHP home power",
+          "charging_power": "Charging power setting",
+          "charge_limit": "Charging limit"
+        },
+        "data_description": {
+          "shp_grid_power": "EcoFlow Smart Home Panel grid-side power sensor.",
+          "shp_home_power": "EcoFlow Smart Home Panel home-load power sensor.",
+          "charging_power": "EcoFlow number entity that sets charging power per active inverter.",
+          "charge_limit": "EcoFlow battery charging-limit percentage."
+        }
+      },
+      "channels": {
+        "title": "Battery channels",
+        "description": "Map each DPU battery SOC sensor, channel switch, and Force Charge switch. Each entity in a three-channel group must be unique.",
+        "data": {
+          "ac1_soc": "AC1 battery SOC",
+          "ac1_channel": "AC1 channel switch",
+          "ac1_force": "AC1 Force Charge switch",
+          "ac2_soc": "AC2 battery SOC",
+          "ac2_channel": "AC2 channel switch",
+          "ac2_force": "AC2 Force Charge switch",
+          "ac3_soc": "AC3 battery SOC",
+          "ac3_channel": "AC3 channel switch",
+          "ac3_force": "AC3 Force Charge switch"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure entity mappings",
+        "description": "Change the Home Assistant entities used by the controller. The integration reloads after a successful reconfiguration.",
+        "data": {
+          "site_grid_power": "Site net grid power",
+          "solar_power": "Solar production power",
+          "shp_grid_power": "SHP grid power",
+          "shp_home_power": "SHP home power",
+          "charging_power": "Charging power setting",
+          "charge_limit": "Charging limit",
+          "ac1_soc": "AC1 battery SOC",
+          "ac1_channel": "AC1 channel switch",
+          "ac1_force": "AC1 Force Charge switch",
+          "ac2_soc": "AC2 battery SOC",
+          "ac2_channel": "AC2 channel switch",
+          "ac2_force": "AC2 Force Charge switch",
+          "ac3_soc": "AC3 battery SOC",
+          "ac3_channel": "AC3 channel switch",
+          "ac3_force": "AC3 Force Charge switch"
+        }
+      }
+    },
+    "error": {
+      "entity_not_found": "One or more selected entities are not currently registered in Home Assistant.",
+      "duplicate_channel_entities": "Each SOC, channel-switch, and Force Charge group must contain three different entities.",
+      "invalid_power_unit": "All selected power sensors must report power in W or kW."
+    },
+    "abort": {
+      "already_configured": "The EcoFlow Solar Surplus Controller is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Controller options",
+        "description": "Keep Operating mode set to Observe while the legacy YAML automation is active. Switch to Control only after disabling the legacy automation so two controllers never write to EcoFlow at the same time.",
+        "data": {
+          "operating_mode": "Operating mode",
+          "preferred_import_w": "Preferred grid import",
+          "start_export_w": "Minimum export to start",
+          "maximum_rate_w": "Controller maximum charge rate per inverter",
+          "minimum_solar_w": "Minimum solar production"
+        },
+        "data_description": {
+          "operating_mode": "Observe computes decisions without service calls. Control is allowed to change EcoFlow charging rate and Force Charge switches.",
+          "preferred_import_w": "Closed-loop grid target. The v2.3 baseline intentionally prefers a small amount of import.",
+          "start_export_w": "Export required before starting a new Force Charge session.",
+          "maximum_rate_w": "Software ceiling. The integration also clamps to the number entity's runtime hardware maximum.",
+          "minimum_solar_w": "Below this production level the controller will not continue solar-surplus Force Charge."
+        }
+      },
+      "advanced": {
+        "title": "Advanced controller tuning",
+        "description": "These defaults match the deployed v2.3 controller. Change them only when you intentionally want different control behavior.",
+        "data": {
+          "minimum_rate_w": "Minimum charge rate",
+          "rate_step_w": "Charge-rate step",
+          "maximum_rate_increase_w": "Maximum upward change per fresh grid sample",
+          "slow_import_decrease_w": "Slow import rate decrease",
+          "moderate_import_decrease_w": "Moderate import rate decrease",
+          "import_hold_high_w": "Import hold upper bound",
+          "moderate_import_threshold_w": "Moderate import threshold",
+          "severe_import_threshold_w": "Severe import threshold",
+          "export_gain": "Export correction gain",
+          "import_gain": "Import correction gain",
+          "stop_all_w": "Stop-all target threshold",
+          "start_2_w": "Start second DPU threshold",
+          "stop_2_w": "Drop to one DPU threshold",
+          "start_3_w": "Start third DPU threshold",
+          "stop_3_w": "Drop to two DPUs threshold",
+          "meter_max_age_seconds": "Site meter freshness limit",
+          "physical_meter_max_age_seconds": "SHP telemetry freshness limit",
+          "physical_recovery_seconds": "Physical mismatch recovery delay"
+        }
+      }
+    },
+    "error": {
+      "max_rate_below_min": "Maximum charge rate must be greater than or equal to the minimum charge rate.",
+      "moderate_threshold_too_low": "Moderate import threshold must be greater than the import-hold upper bound.",
+      "severe_threshold_too_low": "Severe import threshold must be greater than the moderate import threshold.",
+      "invalid_hysteresis": "Each DPU stop threshold must be lower than its corresponding start threshold."
+    }
+  },
+  "selector": {
+    "operating_mode": {
+      "options": {
+        "observe": "Observe only",
+        "control": "Control EcoFlow"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {"name": "Status"},
+      "operating_mode": {"name": "Operating mode"},
+      "commanded_rate": {"name": "Commanded rate"},
+      "proposed_rate": {"name": "Proposed rate"},
+      "commanded_dpu_count": {"name": "Commanded DPU count"},
+      "desired_dpu_count": {"name": "Desired DPU count"},
+      "last_action": {"name": "Last action"}
+    },
+    "binary_sensor": {
+      "control_ready": {"name": "Control ready"},
+      "control_active": {"name": "Control active"}
+    }
+  }
+}
