@@ -5,7 +5,6 @@ from typing import Any, override
 
 import voluptuous as vol
 
-from homeassistant import config_entries
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
@@ -29,16 +28,12 @@ from .const import (
     CONF_AC3_SOC,
     CONF_CHARGE_LIMIT,
     CONF_CHARGING_POWER,
-    CONF_LEGACY_MASK,
-    CONF_LEGACY_RATE,
     CONF_SHP_GRID_POWER,
     CONF_SHP_HOME_POWER,
     CONF_SITE_GRID_POWER,
     CONF_SOLAR_POWER,
     DEFAULT_OPTIONS,
     DOMAIN,
-    LEGACY_MASK_ENTITY,
-    LEGACY_RATE_ENTITY,
     MODE_CONTROL,
     MODE_OBSERVE,
     OPT_EXPORT_GAIN,
@@ -85,11 +80,7 @@ def _number(
 ) -> selector.NumberSelector:
     """Build a number selector without serializing an invalid null unit."""
     if unit is None:
-        config = selector.NumberSelectorConfig(
-            min=minimum,
-            max=maximum,
-            step=step,
-        )
+        config = selector.NumberSelectorConfig(min=minimum, max=maximum, step=step)
     else:
         config = selector.NumberSelectorConfig(
             min=minimum,
@@ -263,7 +254,6 @@ class EcoFlowSurplusConfigFlow(ConfigFlow, domain=DOMAIN):
             if not errors:
                 await self.async_set_unique_id(DOMAIN)
                 self._abort_if_unique_id_configured()
-                self._add_legacy_migration_entities(candidate)
                 return self.async_create_entry(
                     title="EcoFlow Solar Surplus",
                     data=candidate,
@@ -284,11 +274,9 @@ class EcoFlowSurplusConfigFlow(ConfigFlow, domain=DOMAIN):
             if not errors:
                 await self.async_set_unique_id(DOMAIN)
                 self._abort_if_unique_id_mismatch()
-                replacement = dict(user_input)
-                self._add_legacy_migration_entities(replacement)
                 return self.async_update_reload_and_abort(
                     entry,
-                    data=replacement,
+                    data=dict(user_input),
                     reload_even_if_entry_is_unchanged=False,
                 )
         return self.async_show_form(
@@ -353,12 +341,6 @@ class EcoFlowSurplusConfigFlow(ConfigFlow, domain=DOMAIN):
             if state is not None and not _has_power_unit(state):
                 return {"base": "invalid_power_unit"}
         return {}
-
-    def _add_legacy_migration_entities(self, data: dict[str, Any]) -> None:
-        if self.hass.states.get(LEGACY_MASK_ENTITY) is not None:
-            data[CONF_LEGACY_MASK] = LEGACY_MASK_ENTITY
-        if self.hass.states.get(LEGACY_RATE_ENTITY) is not None:
-            data[CONF_LEGACY_RATE] = LEGACY_RATE_ENTITY
 
     @staticmethod
     @callback
