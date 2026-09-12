@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, override
 
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.config_entries import ConfigFlowResult, OptionsFlowWithReload
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+    OptionsFlowWithReload,
+)
 from homeassistant.const import Platform
 from homeassistant.core import State, callback
 from homeassistant.helpers import selector
@@ -71,54 +77,69 @@ SWITCH_SELECTOR = selector.EntitySelector(
 )
 
 
-def _number(minimum: float, maximum: float, step: float, unit: str | None = None):
-    return selector.NumberSelector(
-        selector.NumberSelectorConfig(
+def _number(
+    minimum: float,
+    maximum: float,
+    step: float,
+    unit: str | None = None,
+) -> selector.NumberSelector:
+    """Build a number selector without serializing an invalid null unit."""
+    if unit is None:
+        config = selector.NumberSelectorConfig(
+            min=minimum,
+            max=maximum,
+            step=step,
+        )
+    else:
+        config = selector.NumberSelectorConfig(
             min=minimum,
             max=maximum,
             step=step,
             unit_of_measurement=unit,
         )
+    return selector.NumberSelector(config)
+
+
+def _basic_options_schema() -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Required(OPT_OPERATING_MODE): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[MODE_OBSERVE, MODE_CONTROL],
+                    translation_key="operating_mode",
+                )
+            ),
+            vol.Required(OPT_PREFERRED_IMPORT_W): _number(-1000, 2000, 50, "W"),
+            vol.Required(OPT_START_EXPORT_W): _number(0, 5000, 50, "W"),
+            vol.Required(OPT_MAXIMUM_RATE_W): _number(500, 7200, 100, "W"),
+            vol.Required(OPT_MINIMUM_SOLAR_W): _number(0, 5000, 50, "W"),
+        }
     )
 
 
-BASIC_OPTIONS_SCHEMA = vol.Schema(
-    {
-        vol.Required(OPT_OPERATING_MODE): selector.SelectSelector(
-            selector.SelectSelectorConfig(
-                options=[MODE_OBSERVE, MODE_CONTROL],
-                translation_key="operating_mode",
-            )
-        ),
-        vol.Required(OPT_PREFERRED_IMPORT_W): _number(-1000, 2000, 50, "W"),
-        vol.Required(OPT_START_EXPORT_W): _number(0, 5000, 50, "W"),
-        vol.Required(OPT_MAXIMUM_RATE_W): _number(500, 7200, 100, "W"),
-        vol.Required(OPT_MINIMUM_SOLAR_W): _number(0, 5000, 50, "W"),
-    }
-)
-
-ADVANCED_OPTIONS_SCHEMA = vol.Schema(
-    {
-        vol.Required(OPT_MINIMUM_RATE_W): _number(100, 7200, 100, "W"),
-        vol.Required(OPT_RATE_STEP_W): _number(1, 1000, 1, "W"),
-        vol.Required(OPT_MAXIMUM_RATE_INCREASE_W): _number(100, 5000, 100, "W"),
-        vol.Required(OPT_SLOW_IMPORT_DECREASE_W): _number(0, 5000, 50, "W"),
-        vol.Required(OPT_MODERATE_IMPORT_DECREASE_W): _number(0, 5000, 50, "W"),
-        vol.Required(OPT_IMPORT_HOLD_HIGH_W): _number(0, 5000, 50, "W"),
-        vol.Required(OPT_MODERATE_IMPORT_THRESHOLD_W): _number(0, 10000, 100, "W"),
-        vol.Required(OPT_SEVERE_IMPORT_THRESHOLD_W): _number(0, 15000, 100, "W"),
-        vol.Required(OPT_EXPORT_GAIN): _number(0.1, 2.0, 0.1),
-        vol.Required(OPT_IMPORT_GAIN): _number(0.1, 2.0, 0.1),
-        vol.Required(OPT_STOP_ALL_W): _number(0, 5000, 50, "W"),
-        vol.Required(OPT_START_2_W): _number(0, 15000, 100, "W"),
-        vol.Required(OPT_STOP_2_W): _number(0, 15000, 100, "W"),
-        vol.Required(OPT_START_3_W): _number(0, 20000, 100, "W"),
-        vol.Required(OPT_STOP_3_W): _number(0, 20000, 100, "W"),
-        vol.Required(OPT_METER_MAX_AGE_SECONDS): _number(30, 900, 10, "s"),
-        vol.Required(OPT_PHYSICAL_METER_MAX_AGE_SECONDS): _number(30, 900, 10, "s"),
-        vol.Required(OPT_PHYSICAL_RECOVERY_SECONDS): _number(30, 900, 10, "s"),
-    }
-)
+def _advanced_options_schema() -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Required(OPT_MINIMUM_RATE_W): _number(100, 7200, 100, "W"),
+            vol.Required(OPT_RATE_STEP_W): _number(1, 1000, 1, "W"),
+            vol.Required(OPT_MAXIMUM_RATE_INCREASE_W): _number(100, 5000, 100, "W"),
+            vol.Required(OPT_SLOW_IMPORT_DECREASE_W): _number(0, 5000, 50, "W"),
+            vol.Required(OPT_MODERATE_IMPORT_DECREASE_W): _number(0, 5000, 50, "W"),
+            vol.Required(OPT_IMPORT_HOLD_HIGH_W): _number(0, 5000, 50, "W"),
+            vol.Required(OPT_MODERATE_IMPORT_THRESHOLD_W): _number(0, 10000, 100, "W"),
+            vol.Required(OPT_SEVERE_IMPORT_THRESHOLD_W): _number(0, 15000, 100, "W"),
+            vol.Required(OPT_EXPORT_GAIN): _number(0.1, 2.0, 0.1),
+            vol.Required(OPT_IMPORT_GAIN): _number(0.1, 2.0, 0.1),
+            vol.Required(OPT_STOP_ALL_W): _number(0, 5000, 50, "W"),
+            vol.Required(OPT_START_2_W): _number(0, 15000, 100, "W"),
+            vol.Required(OPT_STOP_2_W): _number(0, 15000, 100, "W"),
+            vol.Required(OPT_START_3_W): _number(0, 20000, 100, "W"),
+            vol.Required(OPT_STOP_3_W): _number(0, 20000, 100, "W"),
+            vol.Required(OPT_METER_MAX_AGE_SECONDS): _number(30, 900, 10, "s"),
+            vol.Required(OPT_PHYSICAL_METER_MAX_AGE_SECONDS): _number(30, 900, 10, "s"),
+            vol.Required(OPT_PHYSICAL_RECOVERY_SECONDS): _number(30, 900, 10, "s"),
+        }
+    )
 
 
 def _required(
@@ -181,7 +202,7 @@ def _full_schema(defaults: Mapping[str, Any]) -> vol.Schema:
     return vol.Schema(merged)
 
 
-class EcoFlowSurplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class EcoFlowSurplusConfigFlow(ConfigFlow, domain=DOMAIN):
     """Configure EcoFlow Solar Surplus Controller."""
 
     VERSION = 1
@@ -189,6 +210,7 @@ class EcoFlowSurplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -308,7 +330,9 @@ class EcoFlowSurplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_AC2_FORCE,
             CONF_AC3_FORCE,
         )
-        if any(key not in data or self.hass.states.get(data[key]) is None for key in required):
+        if any(
+            key not in data or self.hass.states.get(data[key]) is None for key in required
+        ):
             return {"base": "entity_not_found"}
 
         groups = (
@@ -338,9 +362,8 @@ class EcoFlowSurplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
-    def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
-    ) -> config_entries.OptionsFlow:
+    @override
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
         """Create the controller options flow."""
         return EcoFlowSurplusOptionsFlow()
 
@@ -355,6 +378,7 @@ class EcoFlowSurplusOptionsFlow(OptionsFlowWithReload):
     def _current(self) -> dict[str, Any]:
         return {**DEFAULT_OPTIONS, **self.config_entry.options}
 
+    @override
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -365,7 +389,7 @@ class EcoFlowSurplusOptionsFlow(OptionsFlowWithReload):
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
-                BASIC_OPTIONS_SCHEMA, self._current
+                _basic_options_schema(), self._current
             ),
         )
 
@@ -384,14 +408,14 @@ class EcoFlowSurplusOptionsFlow(OptionsFlowWithReload):
             return self.async_show_form(
                 step_id="advanced",
                 data_schema=self.add_suggested_values_to_schema(
-                    ADVANCED_OPTIONS_SCHEMA, current
+                    _advanced_options_schema(), current
                 ),
                 errors=errors,
             )
         return self.async_show_form(
             step_id="advanced",
             data_schema=self.add_suggested_values_to_schema(
-                ADVANCED_OPTIONS_SCHEMA, current
+                _advanced_options_schema(), current
             ),
         )
 
