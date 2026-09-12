@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
@@ -42,5 +43,7 @@ class EcoFlowSurplusEntity(Entity):
             )
         )
 
+    @callback
     def _handle_controller_update(self) -> None:
+        """Write the current controller state from the Home Assistant event loop."""
         self.async_write_ha_state()
