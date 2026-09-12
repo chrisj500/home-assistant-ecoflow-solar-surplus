@@ -1,25 +1,35 @@
 from __future__ import annotations
 
 from collections import deque
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.storage import Store
 
+from .const import (
+    OBSERVABILITY_STORAGE_KEY_PREFIX,
+    OBSERVABILITY_STORAGE_VERSION,
+)
 from .controller import EcoFlowSurplusController
 
 HISTORY_LIMIT = 50
 
 
 class EcoFlowSurplusObservability:
-    """Track controller telemetry and fresh-grid decisions without changing control."""
+    """Track and persist controller telemetry and fresh-grid decisions."""
 
     def __init__(
         self, hass: HomeAssistant, controller: EcoFlowSurplusController
     ) -> None:
         self.hass = hass
         self.controller = controller
+        self._store: Store[dict[str, Any]] = Store(
+            hass,
+            OBSERVABILITY_STORAGE_VERSION,
+            f"{OBSERVABILITY_STORAGE_KEY_PREFIX}.{controller.entry.entry_id}",
+        )
         self._unsub = None
         self._history: deque[dict[str, Any]] = deque(maxlen=HISTORY_LIMIT)
         self._last_command: dict[str, Any] = {}
@@ -29,32 +39,77 @@ class EcoFlowSurplusObservability:
         self._last_decision_at: datetime | None = None
         self._last_seen_grid_action_at: str | None = None
         self._last_error: str | None = None
-        self._refresh(record_history=False)
+        self._session_started_at = datetime.now(UTC)
 
-    def setup(self) -> None:
-        """Subscribe to controller state publications."""
+    async def async_setup(self) -> None:
+        """Load persisted history and subscribe to controller publications."""
+        await self._async_load()
+        self._refresh(record_history=False)
         self._unsub = async_dispatcher_connect(
             self.hass, self.controller.signal, self._handle_controller_update
         )
 
-    def shutdown(self) -> None:
-        """Unsubscribe from controller updates."""
+    async def async_shutdown(self) -> None:
+        """Persist the latest history and unsubscribe from controller updates."""
         if self._unsub is not None:
             self._unsub()
             self._unsub = None
+        await self._async_save()
+
+    async def _async_load(self) -> None:
+        stored = await self._store.async_load()
+        if not isinstance(stored, dict):
+            return
+
+        history = stored.get("decision_history")
+        if isinstance(history, list):
+            for item in history[-HISTORY_LIMIT:]:
+                if isinstance(item, dict):
+                    self._history.append(dict(item))
+
+        decision = stored.get("last_decision")
+        if isinstance(decision, dict):
+            self._last_decision = dict(decision)
+
+        snapshot = stored.get("last_decision_snapshot")
+        if isinstance(snapshot, dict):
+            self._last_decision_snapshot = dict(snapshot)
+
+        last_decision_at = stored.get("last_decision_at")
+        if isinstance(last_decision_at, str):
+            try:
+                self._last_decision_at = datetime.fromisoformat(last_decision_at)
+                self._last_seen_grid_action_at = last_decision_at
+            except ValueError:
+                self._last_decision_at = None
+                self._last_seen_grid_action_at = None
+
+    async def _async_save(self) -> None:
+        await self._store.async_save(
+            {
+                "decision_history": list(self._history),
+                "last_decision": self._last_decision,
+                "last_decision_snapshot": self._last_decision_snapshot,
+                "last_decision_at": (
+                    self._last_decision_at.isoformat()
+                    if self._last_decision_at is not None
+                    else None
+                ),
+            }
+        )
 
     @callback
     def _handle_controller_update(self) -> None:
-        self._refresh(record_history=True)
+        if self._refresh(record_history=True):
+            self.hass.async_create_task(self._async_save())
 
-    def _refresh(self, *, record_history: bool) -> None:
+    def _refresh(self, *, record_history: bool) -> bool:
         data = self.controller.diagnostic_data()
         snapshot = data.get("snapshot")
         decision = data.get("decision")
         command = data.get("command")
 
         self._current_snapshot = dict(snapshot) if isinstance(snapshot, dict) else None
-        self._last_decision = dict(decision) if isinstance(decision, dict) else None
         self._last_error = data.get("last_error")
         current_command = dict(command) if isinstance(command, dict) else {}
 
@@ -70,6 +125,7 @@ class EcoFlowSurplusObservability:
 
         if is_new_grid_decision:
             self._last_seen_grid_action_at = action_at
+            self._last_decision = dict(decision)
             self._last_decision_snapshot = dict(snapshot)
             try:
                 self._last_decision_at = datetime.fromisoformat(action_at)
@@ -79,6 +135,7 @@ class EcoFlowSurplusObservability:
             self._history.append(
                 {
                     "timestamp": action_at,
+                    "session_started_at": self._session_started_at.isoformat(),
                     "site_grid_w": snapshot.get("site_grid_w"),
                     "solar_w": snapshot.get("solar_w"),
                     "physical_charge_w": snapshot.get("physical_charge_w"),
@@ -93,6 +150,7 @@ class EcoFlowSurplusObservability:
             )
 
         self._last_command = current_command
+        return is_new_grid_decision
 
     @property
     def last_decision_at(self) -> datetime | None:
@@ -168,10 +226,12 @@ class EcoFlowSurplusObservability:
         )
 
     def diagnostic_data(self) -> dict[str, Any]:
-        """Return derived observability data and the rolling decision history."""
+        """Return derived observability data and persistent rolling history."""
         return {
             "history_limit": HISTORY_LIMIT,
             "history_count": len(self._history),
+            "history_persistent": True,
+            "session_started_at": self._session_started_at.isoformat(),
             "last_decision_at": (
                 self._last_decision_at.isoformat() if self._last_decision_at else None
             ),
