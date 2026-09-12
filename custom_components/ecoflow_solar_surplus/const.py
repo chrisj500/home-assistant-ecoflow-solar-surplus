@@ -4,7 +4,7 @@ from homeassistant.const import Platform
 
 DOMAIN = "ecoflow_solar_surplus"
 NAME = "EcoFlow Solar Surplus Controller"
-VERSION = "0.1.4"
+VERSION = "0.1.5"
 PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR]
 
 CONF_SITE_GRID_POWER = "site_grid_power"
@@ -22,8 +22,6 @@ CONF_AC3_CHANNEL = "ac3_channel"
 CONF_AC1_FORCE = "ac1_force"
 CONF_AC2_FORCE = "ac2_force"
 CONF_AC3_FORCE = "ac3_force"
-CONF_LEGACY_MASK = "legacy_command_mask"
-CONF_LEGACY_RATE = "legacy_command_rate"
 
 OPT_OPERATING_MODE = "operating_mode"
 MODE_OBSERVE = "observe"
@@ -78,9 +76,8 @@ DEFAULT_OPTIONS: dict[str, float | int | str] = {
     OPT_PHYSICAL_RECOVERY_SECONDS: 120,
 }
 
-LEGACY_MASK_ENTITY = "input_number.ecoflow_commanded_force_mask"
-LEGACY_RATE_ENTITY = "input_number.ecoflow_commanded_rate"
-
 STORAGE_VERSION = 1
 STORAGE_KEY_PREFIX = f"{DOMAIN}.command_state"
+OBSERVABILITY_STORAGE_VERSION = 1
+OBSERVABILITY_STORAGE_KEY_PREFIX = f"{DOMAIN}.observability"
 SIGNAL_UPDATE = f"{DOMAIN}_update_{{}}"
