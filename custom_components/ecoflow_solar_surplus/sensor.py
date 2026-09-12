@@ -4,8 +4,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
-from homeassistant.const import UnitOfPower
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+)
+from homeassistant.const import EntityCategory, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -67,6 +71,86 @@ SENSORS: tuple[EcoFlowSurplusSensorDescription, ...] = (
 )
 
 
+@dataclass(frozen=True, kw_only=True)
+class EcoFlowSurplusObservabilitySensorDescription(SensorEntityDescription):
+    value_fn: Callable[[Any, Any], Any]
+
+
+OBSERVABILITY_SENSORS: tuple[EcoFlowSurplusObservabilitySensorDescription, ...] = (
+    EcoFlowSurplusObservabilitySensorDescription(
+        key="decision_site_grid_power",
+        translation_key="decision_site_grid_power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        suggested_display_precision=0,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda controller, observability: observability.decision_site_grid_w,
+    ),
+    EcoFlowSurplusObservabilitySensorDescription(
+        key="decision_solar_power",
+        translation_key="decision_solar_power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        suggested_display_precision=0,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda controller, observability: observability.decision_solar_w,
+    ),
+    EcoFlowSurplusObservabilitySensorDescription(
+        key="physical_charge_power",
+        translation_key="physical_charge_power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        suggested_display_precision=0,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda controller, observability: observability.physical_charge_w,
+    ),
+    EcoFlowSurplusObservabilitySensorDescription(
+        key="target_charge_power",
+        translation_key="target_charge_power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        suggested_display_precision=0,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda controller, observability: observability.target_charge_w,
+    ),
+    EcoFlowSurplusObservabilitySensorDescription(
+        key="commanded_mask",
+        translation_key="commanded_mask",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda controller, observability: controller.command.mask,
+    ),
+    EcoFlowSurplusObservabilitySensorDescription(
+        key="desired_mask",
+        translation_key="desired_mask",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda controller, observability: observability.desired_mask,
+    ),
+    EcoFlowSurplusObservabilitySensorDescription(
+        key="decision_policy",
+        translation_key="decision_policy",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda controller, observability: observability.decision_policy,
+    ),
+    EcoFlowSurplusObservabilitySensorDescription(
+        key="last_decision_time",
+        translation_key="last_decision_time",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda controller, observability: observability.last_decision_at,
+    ),
+    EcoFlowSurplusObservabilitySensorDescription(
+        key="charge_power_difference",
+        translation_key="charge_power_difference",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        suggested_display_precision=0,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda controller, observability: observability.charge_power_difference_w,
+    ),
+    EcoFlowSurplusObservabilitySensorDescription(
+        key="last_error",
+        translation_key="last_error",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda controller, observability: observability.last_error,
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: EcoFlowSurplusConfigEntry,
@@ -74,9 +158,17 @@ async def async_setup_entry(
 ) -> None:
     """Set up controller diagnostic sensors."""
     controller = entry.runtime_data.controller
+    observability = entry.runtime_data.observability
     async_add_entities(
-        EcoFlowSurplusSensor(entry, controller, description)
-        for description in SENSORS
+        [
+            *(EcoFlowSurplusSensor(entry, controller, description) for description in SENSORS),
+            *(
+                EcoFlowSurplusObservabilitySensor(
+                    entry, controller, observability, description
+                )
+                for description in OBSERVABILITY_SENSORS
+            ),
+        ]
     )
 
 
@@ -92,3 +184,18 @@ class EcoFlowSurplusSensor(EcoFlowSurplusEntity, SensorEntity):
     @property
     def native_value(self):
         return self.entity_description.value_fn(self.controller)
+
+
+class EcoFlowSurplusObservabilitySensor(EcoFlowSurplusEntity, SensorEntity):
+    """Read-only observability sensor backed by controller diagnostics."""
+
+    entity_description: EcoFlowSurplusObservabilitySensorDescription
+
+    def __init__(self, entry, controller, observability, description) -> None:
+        super().__init__(entry, controller, description.key)
+        self.observability = observability
+        self.entity_description = description
+
+    @property
+    def native_value(self):
+        return self.entity_description.value_fn(self.controller, self.observability)
