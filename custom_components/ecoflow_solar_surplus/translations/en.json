@@ -144,11 +144,22 @@
       "proposed_rate": {"name": "Proposed rate"},
       "commanded_dpu_count": {"name": "Commanded DPU count"},
       "desired_dpu_count": {"name": "Desired DPU count"},
-      "last_action": {"name": "Last action"}
+      "last_action": {"name": "Last action"},
+      "decision_site_grid_power": {"name": "Decision site grid power"},
+      "decision_solar_power": {"name": "Decision solar power"},
+      "physical_charge_power": {"name": "Physical charge power"},
+      "target_charge_power": {"name": "Target charge power"},
+      "commanded_mask": {"name": "Commanded mask"},
+      "desired_mask": {"name": "Desired mask"},
+      "decision_policy": {"name": "Decision policy"},
+      "last_decision_time": {"name": "Last decision time"},
+      "charge_power_difference": {"name": "Charge power difference"},
+      "last_error": {"name": "Last error"}
     },
     "binary_sensor": {
       "control_ready": {"name": "Control ready"},
-      "control_active": {"name": "Control active"}
+      "control_active": {"name": "Control active"},
+      "controller_healthy": {"name": "Controller healthy"}
     }
   }
 }
