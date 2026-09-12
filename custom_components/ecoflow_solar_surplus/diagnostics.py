@@ -16,4 +16,5 @@ async def async_get_config_entry_diagnostics(
         "config": dict(entry.data),
         "options": dict(entry.options),
         "controller": entry.runtime_data.controller.diagnostic_data(),
+        "observability": entry.runtime_data.observability.diagnostic_data(),
     }
