@@ -28,7 +28,7 @@ async def async_setup_entry(
     controller = EcoFlowSurplusController(hass, entry)
     await controller.async_setup()
     observability = EcoFlowSurplusObservability(hass, controller)
-    observability.setup()
+    await observability.async_setup()
     entry.runtime_data = EcoFlowSurplusRuntimeData(
         controller=controller,
         observability=observability,
@@ -36,7 +36,7 @@ async def async_setup_entry(
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except Exception:
-        observability.shutdown()
+        await observability.async_shutdown()
         await controller.async_shutdown()
         raise
     return True
@@ -48,6 +48,6 @@ async def async_unload_entry(
     """Unload EcoFlow Solar Surplus Controller."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        entry.runtime_data.observability.shutdown()
+        await entry.runtime_data.observability.async_shutdown()
         await entry.runtime_data.controller.async_shutdown()
     return unload_ok
