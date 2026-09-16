@@ -11,44 +11,50 @@ COMPONENT_DIR = (
 )
 sys.path.insert(0, str(COMPONENT_DIR))
 
-from grid_source import select_grid_source  # noqa: E402
+from power_source import select_power_source  # noqa: E402
 
 
-class GridSourceSelectionTests(unittest.TestCase):
-    """Regression tests for primary/fallback site-grid selection."""
+class PowerSourceSelectionTests(unittest.TestCase):
+    """Regression tests for primary/fallback power-source selection."""
 
     def test_primary_is_preferred_when_valid(self) -> None:
-        selection = select_grid_source(
+        selection = select_power_source(
             primary_w=-425.0,
             primary_ok=True,
             fallback_w=-500.0,
             fallback_ok=True,
+            primary_source="envoy_mqtt",
+            fallback_source="configured_entity",
         )
-        self.assertEqual(selection.source, "primary")
+        self.assertEqual(selection.source, "envoy_mqtt")
         self.assertEqual(selection.value_w, -425.0)
 
     def test_fallback_is_used_when_primary_is_invalid(self) -> None:
-        selection = select_grid_source(
+        selection = select_power_source(
             primary_w=None,
             primary_ok=False,
             fallback_w=650.0,
             fallback_ok=True,
+            primary_source="envoy_mqtt",
+            fallback_source="configured_entity",
         )
-        self.assertEqual(selection.source, "fallback")
+        self.assertEqual(selection.source, "configured_entity")
         self.assertEqual(selection.value_w, 650.0)
 
     def test_fallback_is_used_when_primary_is_stale(self) -> None:
-        selection = select_grid_source(
+        selection = select_power_source(
             primary_w=-900.0,
             primary_ok=False,
             fallback_w=-850.0,
             fallback_ok=True,
+            primary_source="envoy_mqtt",
+            fallback_source="configured_entity",
         )
-        self.assertEqual(selection.source, "fallback")
+        self.assertEqual(selection.source, "configured_entity")
         self.assertEqual(selection.value_w, -850.0)
 
     def test_unavailable_when_neither_source_is_valid(self) -> None:
-        selection = select_grid_source(
+        selection = select_power_source(
             primary_w=None,
             primary_ok=False,
             fallback_w=None,
