@@ -4,7 +4,7 @@ from homeassistant.const import Platform
 
 DOMAIN = "ecoflow_solar_surplus"
 NAME = "EcoFlow Solar Surplus Controller"
-VERSION = "0.1.7"
+VERSION = "0.1.8"
 PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR]
 
 CONF_SITE_GRID_POWER = "site_grid_power"

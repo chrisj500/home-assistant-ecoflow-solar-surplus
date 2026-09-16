@@ -5,7 +5,9 @@ from typing import Any
 
 from homeassistant.components.mqtt import ReceiveMessage
 from homeassistant.core import callback
+from homeassistant.helpers.event import async_call_later
 
+from .cadence import grid_evaluation_delay_seconds
 from .controller import EcoFlowSurplusController, TelemetrySnapshot
 from .metrics import ControllerMetrics
 
@@ -18,6 +20,7 @@ class InstrumentedEcoFlowSurplusController(EcoFlowSurplusController):
         self.metrics = ControllerMetrics()
         self._metrics_last_site_grid_source: str | None = None
         self._metrics_last_solar_source: str | None = None
+        self._grid_delay_due_monotonic: float | None = None
 
     @callback
     def _on_envoy_mqtt(self, message: ReceiveMessage) -> None:
@@ -38,11 +41,32 @@ class InstrumentedEcoFlowSurplusController(EcoFlowSurplusController):
 
     @callback
     def _schedule_grid_evaluation(self) -> None:
+        """Schedule latest-value control with normal and urgent reaction windows."""
+        grid_w = self.realtime_grid_w
+        delay = grid_evaluation_delay_seconds(grid_w)
+        now = self.hass.loop.time()
+        candidate_due = now + delay
+
         if self._grid_delay_cancel is not None:
-            self.metrics.grid_evaluations_coalesced += 1
-            return
-        self.metrics.grid_evaluations_scheduled += 1
-        super()._schedule_grid_evaluation()
+            current_due = self._grid_delay_due_monotonic
+            if current_due is None or candidate_due >= current_due - 0.001:
+                self.metrics.grid_evaluations_coalesced += 1
+                return
+            self._grid_delay_cancel()
+            self._grid_delay_cancel = None
+            self._grid_delay_due_monotonic = None
+            self.metrics.grid_evaluations_accelerated += 1
+        else:
+            self.metrics.grid_evaluations_scheduled += 1
+
+        @callback
+        def _fire(_now) -> None:
+            self._grid_delay_cancel = None
+            self._grid_delay_due_monotonic = None
+            self.hass.async_create_task(self.async_handle_trigger("grid"))
+
+        self._grid_delay_due_monotonic = candidate_due
+        self._grid_delay_cancel = async_call_later(self.hass, delay, _fire)
 
     async def async_handle_trigger(self, trigger_id: str) -> None:
         if self._lock.locked():

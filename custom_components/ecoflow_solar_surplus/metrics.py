@@ -43,6 +43,7 @@ class ControllerMetrics:
     mqtt_payload_errors: int = 0
     grid_evaluations_scheduled: int = 0
     grid_evaluations_coalesced: int = 0
+    grid_evaluations_accelerated: int = 0
     grid_evaluations_completed: int = 0
     grid_evaluations_skipped_busy: int = 0
     site_grid_source_switches: int = 0
@@ -67,6 +68,7 @@ class ControllerMetrics:
             "grid_evaluations": {
                 "scheduled": self.grid_evaluations_scheduled,
                 "coalesced": self.grid_evaluations_coalesced,
+                "accelerated": self.grid_evaluations_accelerated,
                 "completed": self.grid_evaluations_completed,
                 "skipped_busy": self.grid_evaluations_skipped_busy,
                 "timing_ms": self.grid_evaluation_timing.as_dict(),
