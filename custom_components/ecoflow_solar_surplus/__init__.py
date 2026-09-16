@@ -6,8 +6,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import PLATFORMS
-from .controller import EcoFlowSurplusController
 from .observability import EcoFlowSurplusObservability
+from .realtime_controller import EcoFlowSurplusController
 
 
 @dataclass(slots=True)
