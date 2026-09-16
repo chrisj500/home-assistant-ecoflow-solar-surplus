@@ -43,7 +43,9 @@ class InstrumentedEcoFlowSurplusController(EcoFlowSurplusController):
     def _schedule_grid_evaluation(self) -> None:
         """Schedule latest-value control with normal and urgent reaction windows."""
         grid_w = self.realtime_grid_w
-        delay = grid_evaluation_delay_seconds(grid_w)
+        delay = grid_evaluation_delay_seconds(
+            grid_w, charging_active=self.command.mask != 0
+        )
         now = self.hass.loop.time()
         candidate_due = now + delay
 
