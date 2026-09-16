@@ -4,14 +4,14 @@
     "step": {
       "user": {
         "title": "Site power sources",
-        "description": "Select the authoritative Enphase-style site grid and solar production sensors. Power sensors must report W or kW.",
+        "description": "Select fallback site grid and solar production sensors. When native Envoy realtime MQTT telemetry is available, the controller prefers it automatically. Power sensors must report W or kW.",
         "data": {
-          "site_grid_power": "Site net grid power",
-          "solar_power": "Solar production power"
+          "site_grid_power": "Fallback site net grid power",
+          "solar_power": "Fallback solar production power"
         },
         "data_description": {
-          "site_grid_power": "Signed net grid power. Negative values must mean export and positive values import.",
-          "solar_power": "Current solar production used to gate daytime control."
+          "site_grid_power": "Fallback signed net grid power. Negative values must mean export and positive values import.",
+          "solar_power": "Fallback solar production used when realtime Envoy MQTT is unavailable."
         }
       },
       "ecoflow": {
@@ -47,10 +47,10 @@
       },
       "reconfigure": {
         "title": "Reconfigure entity mappings",
-        "description": "Change the Home Assistant entities used by the controller. The integration reloads after a successful reconfiguration.",
+        "description": "Change the fallback Home Assistant entities and EcoFlow controls used by the controller. The integration reloads after a successful reconfiguration.",
         "data": {
-          "site_grid_power": "Site net grid power",
-          "solar_power": "Solar production power",
+          "site_grid_power": "Fallback site net grid power",
+          "solar_power": "Fallback solar production power",
           "shp_grid_power": "SHP grid power",
           "shp_home_power": "SHP home power",
           "charging_power": "Charging power setting",
@@ -145,6 +145,10 @@
       "commanded_dpu_count": {"name": "Commanded DPU count"},
       "desired_dpu_count": {"name": "Desired DPU count"},
       "last_action": {"name": "Last action"},
+      "envoy_realtime_grid_power": {"name": "Envoy realtime grid power"},
+      "envoy_realtime_solar_power": {"name": "Envoy realtime solar power"},
+      "site_grid_source": {"name": "Site grid source"},
+      "solar_source": {"name": "Solar source"},
       "decision_site_grid_power": {"name": "Decision site grid power"},
       "decision_solar_power": {"name": "Decision solar power"},
       "physical_charge_power": {"name": "Physical charge power"},
