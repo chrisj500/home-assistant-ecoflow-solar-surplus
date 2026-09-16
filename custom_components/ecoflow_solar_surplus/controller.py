@@ -37,6 +37,7 @@ from .const import (
     CONF_SITE_GRID_POWER,
     CONF_SOLAR_POWER,
     DEFAULT_OPTIONS,
+    GRID_COALESCE_SECONDS,
     MODE_CONTROL,
     MODE_OBSERVE,
     OPT_EXPORT_GAIN,
@@ -62,10 +63,13 @@ from .const import (
     OPT_STOP_2_W,
     OPT_STOP_3_W,
     OPT_STOP_ALL_W,
+    REALTIME_GRID_MAX_AGE_SECONDS,
+    REALTIME_SITE_GRID_POWER,
     SIGNAL_UPDATE,
     STORAGE_KEY_PREFIX,
     STORAGE_VERSION,
 )
+from .grid_source import select_grid_source
 from .logic import ControlDecision, ControlInputs, ControllerSettings, decide, mask_count
 
 _LOGGER = logging.getLogger(__name__)
@@ -83,6 +87,7 @@ class CommandState:
 class TelemetrySnapshot:
     daylight: bool
     site_grid_ok: bool
+    site_grid_source: str
     solar_ok: bool
     shp_power_ok: bool
     soc_ok: bool
@@ -179,10 +184,15 @@ class EcoFlowSurplusController:
     async def async_setup(self) -> None:
         await self._async_load_command_state()
 
+        grid_entities = list(
+            dict.fromkeys(
+                [REALTIME_SITE_GRID_POWER, self.entry.data[CONF_SITE_GRID_POWER]]
+            )
+        )
         self._unsubs.append(
             async_track_state_change_event(
                 self.hass,
-                [self.entry.data[CONF_SITE_GRID_POWER]],
+                grid_entities,
                 self._on_grid_state_change,
             )
         )
@@ -226,23 +236,19 @@ class EcoFlowSurplusController:
             self._unsubs.pop()()
 
     @callback
-    def _on_grid_state_change(self, event: Event) -> None:
-        new_state = event.data.get("new_state")
-        if not isinstance(new_state, State):
-            return
+    def _on_grid_state_change(self, _event: Event) -> None:
+        """Coalesce high-frequency grid updates without starving the controller."""
         if self._grid_delay_cancel is not None:
-            self._grid_delay_cancel()
-        expected_last_updated = new_state.last_updated
+            return
 
         @callback
         def _fire(_now: datetime) -> None:
             self._grid_delay_cancel = None
-            current = self.hass.states.get(self.entry.data[CONF_SITE_GRID_POWER])
-            if current is None or current.last_updated != expected_last_updated:
-                return
             self.hass.async_create_task(self.async_handle_trigger("grid"))
 
-        self._grid_delay_cancel = async_call_later(self.hass, 2, _fire)
+        self._grid_delay_cancel = async_call_later(
+            self.hass, GRID_COALESCE_SECONDS, _fire
+        )
 
     @callback
     def _on_physical_state_change(self, _event: Event) -> None:
@@ -525,17 +531,32 @@ class EcoFlowSurplusController:
         meter_age = self._option_float(OPT_METER_MAX_AGE_SECONDS)
         physical_age = self._option_float(OPT_PHYSICAL_METER_MAX_AGE_SECONDS)
 
-        site_state = self.hass.states.get(self.entry.data[CONF_SITE_GRID_POWER])
+        fallback_site_state = self.hass.states.get(self.entry.data[CONF_SITE_GRID_POWER])
+        realtime_site_state = self.hass.states.get(REALTIME_SITE_GRID_POWER)
         solar_state = self.hass.states.get(self.entry.data[CONF_SOLAR_POWER])
         shp_grid_state = self.hass.states.get(self.entry.data[CONF_SHP_GRID_POWER])
         shp_home_state = self.hass.states.get(self.entry.data[CONF_SHP_HOME_POWER])
 
-        site_grid_w = _power_w(site_state)
+        fallback_site_w = _power_w(fallback_site_state)
+        realtime_site_w = _power_w(realtime_site_state)
         solar_w = _power_w(solar_state)
         shp_grid_w = _power_w(shp_grid_state)
         shp_home_w = _power_w(shp_home_state)
 
-        site_grid_ok = site_grid_w is not None and _fresh(site_state, meter_age)
+        selection = select_grid_source(
+            primary_w=realtime_site_w,
+            primary_ok=(
+                realtime_site_w is not None
+                and _fresh(realtime_site_state, REALTIME_GRID_MAX_AGE_SECONDS)
+            ),
+            fallback_w=fallback_site_w,
+            fallback_ok=(
+                fallback_site_w is not None
+                and _fresh(fallback_site_state, meter_age)
+            ),
+        )
+        site_grid_w = selection.value_w
+        site_grid_ok = site_grid_w is not None
         solar_ok = solar_w is not None and _fresh(solar_state, meter_age)
         shp_power_ok = (
             shp_grid_w is not None
@@ -574,6 +595,7 @@ class EcoFlowSurplusController:
         return TelemetrySnapshot(
             daylight=self.hass.states.is_state("sun.sun", "above_horizon"),
             site_grid_ok=site_grid_ok,
+            site_grid_source=selection.source,
             solar_ok=solar_ok,
             shp_power_ok=shp_power_ok,
             soc_ok=soc_ok,
@@ -693,6 +715,8 @@ class EcoFlowSurplusController:
             "last_action": self._last_action,
             "last_action_at": self._last_action_at.isoformat() if self._last_action_at else None,
             "last_error": self._last_error,
+            "realtime_grid_entity": REALTIME_SITE_GRID_POWER,
+            "configured_fallback_grid_entity": self.entry.data[CONF_SITE_GRID_POWER],
             "snapshot": snapshot,
             "decision": decision,
             "effective_settings": asdict(self._effective_settings()),
