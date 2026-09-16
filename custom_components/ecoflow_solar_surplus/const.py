@@ -23,11 +23,11 @@ CONF_AC1_FORCE = "ac1_force"
 CONF_AC2_FORCE = "ac2_force"
 CONF_AC3_FORCE = "ac3_force"
 
-# Optional high-frequency grid source supplied by the companion Envoy MQTT package.
-# When it is present and fresh, the controller prefers it over CONF_SITE_GRID_POWER.
-# The configured site-grid entity remains the automatic fallback.
-REALTIME_SITE_GRID_POWER = "sensor.envoy_realtime_grid_power"
-REALTIME_GRID_MAX_AGE_SECONDS = 10.0
+# Native Envoy realtime MQTT support. The upstream Envoy bridge publishes
+# /ivp/meters/readings payloads to this topic. Realtime telemetry is optional;
+# the configured Home Assistant site-grid and solar entities remain fallbacks.
+DEFAULT_ENVOY_MQTT_TOPIC = "/envoy/json"
+ENVOY_REALTIME_MAX_AGE_SECONDS = 5.0
 GRID_COALESCE_SECONDS = 1.0
 
 OPT_OPERATING_MODE = "operating_mode"
