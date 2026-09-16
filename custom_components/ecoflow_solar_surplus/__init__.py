@@ -6,7 +6,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import PLATFORMS
-from .controller import EcoFlowSurplusController
+from .instrumented_controller import InstrumentedEcoFlowSurplusController
 from .observability import EcoFlowSurplusObservability
 
 
@@ -14,7 +14,7 @@ from .observability import EcoFlowSurplusObservability
 class EcoFlowSurplusRuntimeData:
     """Runtime data attached to the config entry."""
 
-    controller: EcoFlowSurplusController
+    controller: InstrumentedEcoFlowSurplusController
     observability: EcoFlowSurplusObservability
 
 
@@ -25,7 +25,7 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: EcoFlowSurplusConfigEntry
 ) -> bool:
     """Set up EcoFlow Solar Surplus Controller from a config entry."""
-    controller = EcoFlowSurplusController(hass, entry)
+    controller = InstrumentedEcoFlowSurplusController(hass, entry)
     await controller.async_setup()
     observability = EcoFlowSurplusObservability(hass, controller)
     await observability.async_setup()
