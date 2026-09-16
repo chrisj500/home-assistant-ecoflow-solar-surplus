@@ -4,7 +4,7 @@ from homeassistant.const import Platform
 
 DOMAIN = "ecoflow_solar_surplus"
 NAME = "EcoFlow Solar Surplus Controller"
-VERSION = "0.1.5"
+VERSION = "0.1.6"
 PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR]
 
 CONF_SITE_GRID_POWER = "site_grid_power"
@@ -22,6 +22,13 @@ CONF_AC3_CHANNEL = "ac3_channel"
 CONF_AC1_FORCE = "ac1_force"
 CONF_AC2_FORCE = "ac2_force"
 CONF_AC3_FORCE = "ac3_force"
+
+# Native Envoy realtime MQTT support. The upstream Envoy bridge publishes
+# /ivp/meters/readings payloads to this topic. Realtime telemetry is optional;
+# the configured Home Assistant site-grid and solar entities remain fallbacks.
+DEFAULT_ENVOY_MQTT_TOPIC = "/envoy/json"
+ENVOY_REALTIME_MAX_AGE_SECONDS = 5.0
+GRID_COALESCE_SECONDS = 1.0
 
 OPT_OPERATING_MODE = "operating_mode"
 MODE_OBSERVE = "observe"

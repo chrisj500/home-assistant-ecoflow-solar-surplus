@@ -1,6 +1,7 @@
 {
   "domain": "ecoflow_solar_surplus",
   "name": "EcoFlow Solar Surplus Controller",
+  "after_dependencies": ["mqtt"],
   "codeowners": ["@chrisj500"],
   "config_flow": true,
   "dependencies": ["sun"],
@@ -10,5 +11,5 @@
   "issue_tracker": "https://github.com/chrisj500/home-assistant-ecoflow-solar-surplus/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "0.1.5"
+  "version": "0.1.6"
 }

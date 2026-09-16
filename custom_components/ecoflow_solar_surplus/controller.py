@@ -4,9 +4,12 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+import json
 import logging
 from typing import Any
 
+from homeassistant.components import mqtt
+from homeassistant.components.mqtt import DOMAIN as MQTT_DOMAIN, ReceiveMessage
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError
@@ -19,6 +22,7 @@ from homeassistant.helpers.event import (
     async_track_time_change,
 )
 from homeassistant.helpers.storage import Store
+from homeassistant.setup import async_when_setup
 
 from .const import (
     CONF_AC1_CHANNEL,
@@ -36,7 +40,10 @@ from .const import (
     CONF_SHP_HOME_POWER,
     CONF_SITE_GRID_POWER,
     CONF_SOLAR_POWER,
+    DEFAULT_ENVOY_MQTT_TOPIC,
     DEFAULT_OPTIONS,
+    ENVOY_REALTIME_MAX_AGE_SECONDS,
+    GRID_COALESCE_SECONDS,
     MODE_CONTROL,
     MODE_OBSERVE,
     OPT_EXPORT_GAIN,
@@ -67,9 +74,12 @@ from .const import (
     STORAGE_VERSION,
 )
 from .logic import ControlDecision, ControlInputs, ControllerSettings, decide, mask_count
+from .power_source import select_power_source
 
 _LOGGER = logging.getLogger(__name__)
 INVALID_STATES = {"unknown", "unavailable", "none", ""}
+ENVOY_PRODUCTION_EID = 704643328
+ENVOY_NET_GRID_EID = 704643584
 
 
 @dataclass(slots=True)
@@ -83,7 +93,9 @@ class CommandState:
 class TelemetrySnapshot:
     daylight: bool
     site_grid_ok: bool
+    site_grid_source: str
     solar_ok: bool
+    solar_source: str
     shp_power_ok: bool
     soc_ok: bool
     site_grid_w: float
@@ -114,6 +126,14 @@ class EcoFlowSurplusController:
         self._unsubs: list[Callable[[], None]] = []
         self._grid_delay_cancel: Callable[[], None] | None = None
         self._physical_recovery_cancel: Callable[[], None] | None = None
+        self._realtime_expiry_cancel: Callable[[], None] | None = None
+        self._mqtt_unsub: Callable[[], None] | None = None
+        self._realtime_grid_w: float | None = None
+        self._realtime_grid_at: datetime | None = None
+        self._realtime_solar_w: float | None = None
+        self._realtime_solar_at: datetime | None = None
+        self._mqtt_payload_error: str | None = None
+        self._shutdown = False
         self._last_decision: ControlDecision | None = None
         self._last_snapshot: TelemetrySnapshot | None = None
         self._last_trigger = "startup"
@@ -132,6 +152,26 @@ class EcoFlowSurplusController:
     @property
     def is_control_mode(self) -> bool:
         return self.operating_mode == MODE_CONTROL
+
+    @property
+    def realtime_grid_w(self) -> float | None:
+        if not self._realtime_fresh(self._realtime_grid_at):
+            return None
+        return self._realtime_grid_w
+
+    @property
+    def realtime_solar_w(self) -> float | None:
+        if not self._realtime_fresh(self._realtime_solar_at):
+            return None
+        return self._realtime_solar_w
+
+    @property
+    def site_grid_source(self) -> str:
+        return self._last_snapshot.site_grid_source if self._last_snapshot else "unavailable"
+
+    @property
+    def solar_source(self) -> str:
+        return self._last_snapshot.solar_source if self._last_snapshot else "unavailable"
 
     def _option_float(self, key: str) -> float:
         return float(self.entry.options.get(key, DEFAULT_OPTIONS[key]))
@@ -179,11 +219,19 @@ class EcoFlowSurplusController:
     async def async_setup(self) -> None:
         await self._async_load_command_state()
 
+        fallback_entities = list(
+            dict.fromkeys(
+                [
+                    self.entry.data[CONF_SITE_GRID_POWER],
+                    self.entry.data[CONF_SOLAR_POWER],
+                ]
+            )
+        )
         self._unsubs.append(
             async_track_state_change_event(
                 self.hass,
-                [self.entry.data[CONF_SITE_GRID_POWER]],
-                self._on_grid_state_change,
+                fallback_entities,
+                self._on_power_state_change,
             )
         )
         self._unsubs.append(
@@ -205,6 +253,8 @@ class EcoFlowSurplusController:
             async_track_time_change(self.hass, self._on_reassert_tick, second=40)
         )
 
+        async_when_setup(self.hass, MQTT_DOMAIN, self._async_setup_mqtt)
+
         self._last_snapshot = self._snapshot()
         self._last_action = (
             "observing_without_service_calls"
@@ -215,34 +265,124 @@ class EcoFlowSurplusController:
         self._evaluate_physical_recovery_timer()
         self._notify()
 
+    async def _async_setup_mqtt(self, hass: HomeAssistant, _component: str) -> None:
+        """Subscribe to the local Envoy bridge when Home Assistant MQTT is available."""
+        if self._shutdown or self._mqtt_unsub is not None:
+            return
+        try:
+            self._mqtt_unsub = await mqtt.async_subscribe(
+                hass, DEFAULT_ENVOY_MQTT_TOPIC, self._on_envoy_mqtt
+            )
+        except HomeAssistantError as err:
+            _LOGGER.warning("Unable to subscribe to Envoy realtime MQTT: %s", err)
+
+    @callback
+    def _on_envoy_mqtt(self, message: ReceiveMessage) -> None:
+        """Parse one /ivp/meters/readings payload without creating raw HA states."""
+        try:
+            payload = json.loads(message.payload)
+        except (TypeError, ValueError, json.JSONDecodeError) as err:
+            self._mqtt_payload_error = f"invalid_json: {err}"
+            return
+        if not isinstance(payload, list):
+            self._mqtt_payload_error = "payload_not_list"
+            return
+
+        grid_w: float | None = None
+        solar_w: float | None = None
+        for meter in payload:
+            if not isinstance(meter, dict):
+                continue
+            try:
+                eid = int(meter.get("eid"))
+                active_power = float(meter.get("activePower"))
+            except (TypeError, ValueError):
+                continue
+            if eid == ENVOY_PRODUCTION_EID:
+                solar_w = max(0.0, active_power)
+            elif eid == ENVOY_NET_GRID_EID:
+                grid_w = active_power
+
+        if grid_w is None and solar_w is None:
+            self._mqtt_payload_error = "required_eids_missing"
+            return
+
+        now = datetime.now(UTC)
+        if grid_w is not None:
+            self._realtime_grid_w = grid_w
+            self._realtime_grid_at = now
+        if solar_w is not None:
+            self._realtime_solar_w = solar_w
+            self._realtime_solar_at = now
+        self._mqtt_payload_error = None
+        self._schedule_realtime_expiry()
+        self._schedule_grid_evaluation()
+
+    def _schedule_realtime_expiry(self) -> None:
+        if self._realtime_expiry_cancel is not None:
+            self._realtime_expiry_cancel()
+            self._realtime_expiry_cancel = None
+
+        timestamps = [
+            stamp
+            for stamp in (self._realtime_grid_at, self._realtime_solar_at)
+            if stamp is not None
+        ]
+        if not timestamps:
+            return
+        oldest = min(timestamps)
+        age = (datetime.now(UTC) - oldest).total_seconds()
+        delay = max(0.1, ENVOY_REALTIME_MAX_AGE_SECONDS - age + 0.1)
+
+        @callback
+        def _expire(_now: datetime) -> None:
+            self._realtime_expiry_cancel = None
+            self._schedule_grid_evaluation()
+
+        self._realtime_expiry_cancel = async_call_later(self.hass, delay, _expire)
+
+    def _realtime_fresh(self, timestamp: datetime | None) -> bool:
+        if timestamp is None:
+            return False
+        age = (datetime.now(UTC) - timestamp).total_seconds()
+        return age <= ENVOY_REALTIME_MAX_AGE_SECONDS
+
     async def async_shutdown(self) -> None:
+        self._shutdown = True
         if self._grid_delay_cancel is not None:
             self._grid_delay_cancel()
             self._grid_delay_cancel = None
         if self._physical_recovery_cancel is not None:
             self._physical_recovery_cancel()
             self._physical_recovery_cancel = None
+        if self._realtime_expiry_cancel is not None:
+            self._realtime_expiry_cancel()
+            self._realtime_expiry_cancel = None
+        if self._mqtt_unsub is not None:
+            self._mqtt_unsub()
+            self._mqtt_unsub = None
         while self._unsubs:
             self._unsubs.pop()()
 
     @callback
-    def _on_grid_state_change(self, event: Event) -> None:
-        new_state = event.data.get("new_state")
-        if not isinstance(new_state, State):
-            return
+    def _on_power_state_change(self, _event: Event) -> None:
+        """React to configured fallback source changes."""
+        self._schedule_grid_evaluation()
+
+    @callback
+    def _schedule_grid_evaluation(self) -> None:
+        """Coalesce high-frequency readings without starving the controller."""
         if self._grid_delay_cancel is not None:
-            self._grid_delay_cancel()
-        expected_last_updated = new_state.last_updated
+            return
 
         @callback
         def _fire(_now: datetime) -> None:
             self._grid_delay_cancel = None
-            current = self.hass.states.get(self.entry.data[CONF_SITE_GRID_POWER])
-            if current is None or current.last_updated != expected_last_updated:
-                return
             self.hass.async_create_task(self.async_handle_trigger("grid"))
 
-        self._grid_delay_cancel = async_call_later(self.hass, 2, _fire)
+        self._grid_delay_cancel = async_call_later(
+            self.hass, GRID_COALESCE_SECONDS, _fire
+        )
 
     @callback
     def _on_physical_state_change(self, _event: Event) -> None:
@@ -525,18 +665,48 @@ class EcoFlowSurplusController:
         meter_age = self._option_float(OPT_METER_MAX_AGE_SECONDS)
         physical_age = self._option_float(OPT_PHYSICAL_METER_MAX_AGE_SECONDS)
 
-        site_state = self.hass.states.get(self.entry.data[CONF_SITE_GRID_POWER])
-        solar_state = self.hass.states.get(self.entry.data[CONF_SOLAR_POWER])
+        fallback_site_state = self.hass.states.get(self.entry.data[CONF_SITE_GRID_POWER])
+        fallback_solar_state = self.hass.states.get(self.entry.data[CONF_SOLAR_POWER])
         shp_grid_state = self.hass.states.get(self.entry.data[CONF_SHP_GRID_POWER])
         shp_home_state = self.hass.states.get(self.entry.data[CONF_SHP_HOME_POWER])
 
-        site_grid_w = _power_w(site_state)
-        solar_w = _power_w(solar_state)
+        fallback_site_w = _power_w(fallback_site_state)
+        fallback_solar_w = _power_w(fallback_solar_state)
         shp_grid_w = _power_w(shp_grid_state)
         shp_home_w = _power_w(shp_home_state)
 
-        site_grid_ok = site_grid_w is not None and _fresh(site_state, meter_age)
-        solar_ok = solar_w is not None and _fresh(solar_state, meter_age)
+        site_selection = select_power_source(
+            primary_w=self._realtime_grid_w,
+            primary_ok=(
+                self._realtime_grid_w is not None
+                and self._realtime_fresh(self._realtime_grid_at)
+            ),
+            fallback_w=fallback_site_w,
+            fallback_ok=(
+                fallback_site_w is not None
+                and _fresh(fallback_site_state, meter_age)
+            ),
+            primary_source="envoy_mqtt",
+            fallback_source="configured_entity",
+        )
+        solar_selection = select_power_source(
+            primary_w=self._realtime_solar_w,
+            primary_ok=(
+                self._realtime_solar_w is not None
+                and self._realtime_fresh(self._realtime_solar_at)
+            ),
+            fallback_w=fallback_solar_w,
+            fallback_ok=(
+                fallback_solar_w is not None
+                and _fresh(fallback_solar_state, meter_age)
+            ),
+            primary_source="envoy_mqtt",
+            fallback_source="configured_entity",
+        )
+        site_grid_w = site_selection.value_w
+        solar_w = solar_selection.value_w
+        site_grid_ok = site_grid_w is not None
+        solar_ok = solar_w is not None
         shp_power_ok = (
             shp_grid_w is not None
             and shp_home_w is not None
@@ -574,7 +744,9 @@ class EcoFlowSurplusController:
         return TelemetrySnapshot(
             daylight=self.hass.states.is_state("sun.sun", "above_horizon"),
             site_grid_ok=site_grid_ok,
+            site_grid_source=site_selection.source,
             solar_ok=solar_ok,
+            solar_source=solar_selection.source,
             shp_power_ok=shp_power_ok,
             soc_ok=soc_ok,
             site_grid_w=float(site_grid_w or 0.0),
@@ -693,6 +865,20 @@ class EcoFlowSurplusController:
             "last_action": self._last_action,
             "last_action_at": self._last_action_at.isoformat() if self._last_action_at else None,
             "last_error": self._last_error,
+            "envoy_realtime": {
+                "topic": DEFAULT_ENVOY_MQTT_TOPIC,
+                "grid_w": self.realtime_grid_w,
+                "solar_w": self.realtime_solar_w,
+                "grid_received_at": (
+                    self._realtime_grid_at.isoformat() if self._realtime_grid_at else None
+                ),
+                "solar_received_at": (
+                    self._realtime_solar_at.isoformat() if self._realtime_solar_at else None
+                ),
+                "last_payload_error": self._mqtt_payload_error,
+            },
+            "configured_fallback_grid_entity": self.entry.data[CONF_SITE_GRID_POWER],
+            "configured_fallback_solar_entity": self.entry.data[CONF_SOLAR_POWER],
             "snapshot": snapshot,
             "decision": decision,
             "effective_settings": asdict(self._effective_settings()),

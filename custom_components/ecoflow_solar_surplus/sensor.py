@@ -68,6 +68,34 @@ SENSORS: tuple[EcoFlowSurplusSensorDescription, ...] = (
         translation_key="last_action",
         value_fn=lambda controller: controller.last_action,
     ),
+    EcoFlowSurplusSensorDescription(
+        key="envoy_realtime_grid_power",
+        translation_key="envoy_realtime_grid_power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        suggested_display_precision=0,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda controller: controller.realtime_grid_w,
+    ),
+    EcoFlowSurplusSensorDescription(
+        key="envoy_realtime_solar_power",
+        translation_key="envoy_realtime_solar_power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        suggested_display_precision=0,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda controller: controller.realtime_solar_w,
+    ),
+    EcoFlowSurplusSensorDescription(
+        key="site_grid_source",
+        translation_key="site_grid_source",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda controller: controller.site_grid_source,
+    ),
+    EcoFlowSurplusSensorDescription(
+        key="solar_source",
+        translation_key="solar_source",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda controller: controller.solar_source,
+    ),
 )
 
 
