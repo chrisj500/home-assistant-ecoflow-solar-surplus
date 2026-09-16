@@ -1,6 +1,7 @@
 {
   "domain": "ecoflow_solar_surplus",
   "name": "EcoFlow Solar Surplus Controller",
+  "after_dependencies": ["mqtt"],
   "codeowners": ["@chrisj500"],
   "config_flow": true,
   "dependencies": ["sun"],
