@@ -21,6 +21,7 @@ class InstrumentedEcoFlowSurplusController(EcoFlowSurplusController):
         self._metrics_last_site_grid_source: str | None = None
         self._metrics_last_solar_source: str | None = None
         self._grid_delay_due_monotonic: float | None = None
+        self._reconcile_requested = False
 
     @callback
     def _on_envoy_mqtt(self, message: ReceiveMessage) -> None:
@@ -72,10 +73,18 @@ class InstrumentedEcoFlowSurplusController(EcoFlowSurplusController):
         self._grid_delay_cancel = async_call_later(self.hass, delay, _fire)
 
     async def async_handle_trigger(self, trigger_id: str) -> None:
+        """Collapse busy-time triggers into one fresh reconciliation.
+
+        EcoFlow service calls can take several seconds. While one command transaction is
+        in flight, incoming telemetry is still accepted but no additional command is
+        queued. Instead, remember that the world changed. As soon as the current
+        transaction finishes, run one fresh grid evaluation against the latest telemetry
+        and current command state. Intermediate decisions are deliberately discarded.
+        """
         if self._lock.locked():
             if trigger_id == "grid":
                 self.metrics.grid_evaluations_skipped_busy += 1
-            await super().async_handle_trigger(trigger_id)
+            self._reconcile_requested = True
             return
 
         started = perf_counter()
@@ -84,6 +93,10 @@ class InstrumentedEcoFlowSurplusController(EcoFlowSurplusController):
             elapsed_ms = (perf_counter() - started) * 1000.0
             self.metrics.grid_evaluations_completed += 1
             self.metrics.grid_evaluation_timing.record(elapsed_ms)
+
+        if self._reconcile_requested and not self._shutdown:
+            self._reconcile_requested = False
+            self.hass.async_create_task(self.async_handle_trigger("grid"))
 
     def _snapshot(self) -> TelemetrySnapshot:
         snapshot = super()._snapshot()
