@@ -41,8 +41,14 @@ class InstrumentedEcoFlowSurplusController(EcoFlowSurplusController):
             self.metrics.mqtt_payload_errors += 1
 
     @callback
-    def _schedule_grid_evaluation(self) -> None:
-        """Schedule latest-value control with normal and urgent reaction windows."""
+    def _schedule_grid_evaluation(self, *, restart_window: bool = False) -> None:
+        """Schedule latest-value control with normal and urgent reaction windows.
+
+        ``restart_window`` deliberately discards any timer created while an EcoFlow
+        command was still in flight. This makes the post-command decision use a full
+        fresh adaptive window after the actuator is free, while still retaining the
+        newest Envoy telemetry received during the command.
+        """
         grid_w = self.realtime_grid_w
         delay = grid_evaluation_delay_seconds(
             grid_w,
@@ -53,13 +59,17 @@ class InstrumentedEcoFlowSurplusController(EcoFlowSurplusController):
 
         if self._grid_delay_cancel is not None:
             current_due = self._grid_delay_due_monotonic
-            if current_due is None or candidate_due >= current_due - 0.001:
+            if (
+                not restart_window
+                and (current_due is None or candidate_due >= current_due - 0.001)
+            ):
                 self.metrics.grid_evaluations_coalesced += 1
                 return
             self._grid_delay_cancel()
             self._grid_delay_cancel = None
             self._grid_delay_due_monotonic = None
-            self.metrics.grid_evaluations_accelerated += 1
+            if not restart_window:
+                self.metrics.grid_evaluations_accelerated += 1
         else:
             self.metrics.grid_evaluations_scheduled += 1
 
@@ -73,13 +83,14 @@ class InstrumentedEcoFlowSurplusController(EcoFlowSurplusController):
         self._grid_delay_cancel = async_call_later(self.hass, delay, _fire)
 
     async def async_handle_trigger(self, trigger_id: str) -> None:
-        """Collapse busy-time triggers into one fresh reconciliation.
+        """Collapse busy-time triggers into one fresh scheduled reconciliation.
 
         EcoFlow service calls can take several seconds. While one command transaction is
         in flight, incoming telemetry is still accepted but no additional command is
-        queued. Instead, remember that the world changed. As soon as the current
-        transaction finishes, run one fresh grid evaluation against the latest telemetry
-        and current command state. Intermediate decisions are deliberately discarded.
+        queued. Instead, remember that the world changed. When the transaction finishes,
+        discard any timer that began while the actuator was busy and start one fresh
+        adaptive grid-evaluation window. Intermediate decisions are deliberately
+        discarded; the newest telemetry is retained.
         """
         if self._lock.locked():
             if trigger_id == "grid":
@@ -96,7 +107,7 @@ class InstrumentedEcoFlowSurplusController(EcoFlowSurplusController):
 
         if self._reconcile_requested and not self._shutdown:
             self._reconcile_requested = False
-            self.hass.async_create_task(self.async_handle_trigger("grid"))
+            self._schedule_grid_evaluation(restart_window=True)
 
     def _snapshot(self) -> TelemetrySnapshot:
         snapshot = super()._snapshot()
