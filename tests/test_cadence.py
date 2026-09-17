@@ -31,16 +31,26 @@ class GridCadenceTests(unittest.TestCase):
             NORMAL_GRID_EVALUATION_SECONDS,
         )
 
-    def test_material_export_is_urgent(self) -> None:
+    def test_material_export_is_always_urgent(self) -> None:
         self.assertEqual(
             grid_evaluation_delay_seconds(-500.0),
             URGENT_GRID_EVALUATION_SECONDS,
         )
-
-    def test_large_import_is_urgent(self) -> None:
         self.assertEqual(
-            grid_evaluation_delay_seconds(1000.0),
+            grid_evaluation_delay_seconds(-500.0, charging_active=True),
             URGENT_GRID_EVALUATION_SECONDS,
+        )
+
+    def test_large_import_is_urgent_while_charging(self) -> None:
+        self.assertEqual(
+            grid_evaluation_delay_seconds(1000.0, charging_active=True),
+            URGENT_GRID_EVALUATION_SECONDS,
+        )
+
+    def test_large_import_is_smoothed_when_charging_is_off(self) -> None:
+        self.assertEqual(
+            grid_evaluation_delay_seconds(1000.0, charging_active=False),
+            NORMAL_GRID_EVALUATION_SECONDS,
         )
 
     def test_small_export_remains_smoothed(self) -> None:
