@@ -11,9 +11,10 @@ from unittest.mock import AsyncMock
 source = Path('custom_components/ecoflow_solar_surplus/controller.py').read_text()
 tree = ast.parse(source)
 controller = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'EcoFlowSurplusController')
-methods = [n for n in controller.body if getattr(n, 'name', '') in {'_force_states', '_async_verify_stop', 'async_handle_trigger'}]
+methods = [n for n in controller.body if getattr(n, 'name', '') in {'_force_states', '_shutdown_telemetry', '_async_verify_stop', 'async_handle_trigger'}]
 module = ast.Module(body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0), ast.ClassDef(name='Controller', bases=[], keywords=[], body=methods, decorator_list=[])], type_ignores=[])
-namespace = {'datetime': datetime, 'UTC': UTC, '_LOGGER': logging.getLogger('test'), 'HomeAssistantError': RuntimeError, 'MODE_OBSERVE': 'observe'}
+module.body.extend(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_fresh')
+namespace = {'datetime': datetime, 'UTC': UTC, '_LOGGER': logging.getLogger('test'), 'HomeAssistantError': RuntimeError, 'MODE_OBSERVE': 'observe', 'OPT_PHYSICAL_METER_MAX_AGE_SECONDS': 'max_age', 'CONF_SHP_GRID_POWER': 'grid', 'CONF_SHP_HOME_POWER': 'home'}
 exec(compile(ast.fix_missing_locations(module), '<actual controller methods>', 'exec'), namespace)
 Controller = namespace['Controller']
 
@@ -22,7 +23,12 @@ class ShutdownTests(IsolatedAsyncioTestCase):
         self.c = Controller()
         self.c.force_entities = ('a', 'b', 'c')
         self.states = {'a': 'on', 'b': 'off', 'c': 'off'}
-        self.c.hass = SimpleNamespace(states=SimpleNamespace(get=lambda e: SimpleNamespace(state=self.states[e])))
+        self.reported = datetime.now(UTC)
+        self.c.hass = SimpleNamespace(states=SimpleNamespace(get=lambda e: SimpleNamespace(
+            state=self.states.get(e, '0'), last_reported=self.reported,
+            last_updated=self.reported - timedelta(minutes=30))))
+        self.c.entry = SimpleNamespace(data={'grid': 'grid', 'home': 'home'})
+        self.c._option_float = lambda _: 300
         self.c.command = SimpleNamespace(mask=0, owned=True)
         self.c._stop_status = 'not_requested'
         self.c._stop_attempts = 0
@@ -64,6 +70,7 @@ class ShutdownTests(IsolatedAsyncioTestCase):
         await self.stop()
         self.assertNotEqual(self.c._stop_status, 'confirmed')
         self.states.update(dict.fromkeys(self.states, 'off'))
+        self.reported = datetime.now(UTC)
         await self.stop()
         self.assertEqual(self.c._stop_status, 'confirmed')
 
@@ -87,6 +94,69 @@ class ShutdownTests(IsolatedAsyncioTestCase):
         self.snapshot.shp_power_ok = False
         await self.stop()
         self.assertNotEqual(self.c._stop_status, 'confirmed')
+
+    async def test_pre_command_cache_waits_without_retries_or_failure(self):
+        await self.stop()
+        self.c._stop_last_at -= timedelta(seconds=31)
+        self.reported = self.c._stop_last_at - timedelta(seconds=1)
+        for _ in range(100): await self.stop()
+        self.assertEqual(self.c._stop_attempts, 1)
+        self.c._async_turn_off_all.assert_awaited_once()
+        self.assertEqual(self.c._stop_status, 'awaiting_fresh_telemetry')
+        self.assertIsNone(self.c._last_error)
+
+    async def test_late_fresh_off_reports_confirm_without_restart(self):
+        await self.stop()
+        self.c._stop_last_at -= timedelta(seconds=31)
+        self.reported = self.c._stop_last_at - timedelta(seconds=1)
+        await self.stop()
+        self.states.update(dict.fromkeys(self.states, 'off'))
+        self.snapshot.physical_charge_w = 0
+        self.reported = datetime.now(UTC)
+        await self.stop()
+        self.assertEqual(self.c._stop_status, 'confirmed')
+        self.assertEqual(self.c._stop_attempts, 1)
+        self.c._async_turn_off_all.assert_awaited_once()
+
+    async def test_fresh_charging_reports_exhaust_retry_budget(self):
+        await self.stop()
+        for _ in range(3):
+            self.c._stop_last_at -= timedelta(seconds=31)
+            self.reported = datetime.now(UTC)
+            await self.stop()
+        self.assertEqual(self.c._stop_attempts, 3)
+        self.assertEqual(self.c._stop_status, 'unconfirmed')
+        self.assertIn('Fresh telemetry', self.c._last_error)
+
+    async def test_one_old_panel_reading_cannot_confirm_or_trigger_retry(self):
+        await self.stop()
+        self.c._stop_last_at -= timedelta(seconds=31)
+        old = self.c._stop_last_at - timedelta(seconds=1)
+        self.states.update(dict.fromkeys(self.states, 'off'))
+        now = datetime.now(UTC)
+        self.c.hass.states.get = lambda e: SimpleNamespace(
+            state=self.states.get(e, '0'), last_reported=old if e == 'home' else now,
+            last_updated=old)
+        self.snapshot.physical_charge_w = 0
+        await self.stop()
+        self.assertEqual(self.c._stop_status, 'awaiting_fresh_telemetry')
+        self.assertEqual(self.c._stop_attempts, 1)
+
+    async def test_same_pre_retry_positive_report_cannot_exhaust_budget(self):
+        await self.stop()
+        self.c._stop_last_at -= timedelta(seconds=31)
+        self.reported = datetime.now(UTC)
+        await self.stop()
+        self.c._stop_last_at -= timedelta(seconds=31)
+        self.reported = self.c._stop_last_at - timedelta(seconds=1)
+        await self.stop()
+        self.assertEqual(self.c._stop_attempts, 2)
+        self.assertEqual(self.c._stop_status, 'awaiting_fresh_telemetry')
+
+    async def test_unchanged_values_with_new_report_are_fresh(self):
+        state = SimpleNamespace(last_updated=datetime.now(UTC)-timedelta(hours=1),
+                                last_reported=datetime.now(UTC))
+        self.assertTrue(namespace['_fresh'](state, 300))
 
     async def test_later_recurrence_gets_new_retry_budget(self):
         self.c._stop_status = 'confirmed'
