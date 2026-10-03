@@ -140,6 +140,9 @@ class EcoFlowSurplusController:
         self._last_action = "initialized"
         self._last_error: str | None = None
         self._last_action_at: datetime | None = None
+        self._stop_attempts = 0
+        self._stop_last_at: datetime | None = None
+        self._stop_status = "not_requested"
 
     @property
     def signal(self) -> str:
@@ -423,6 +426,20 @@ class EcoFlowSurplusController:
                 settings = self._effective_settings()
                 self._normalize_command_rate(settings)
 
+                # Enforce safety using observed hardware, even if our saved command
+                # already says off. Never reassert an on command outside safe solar.
+                unsafe = (
+                    not snapshot.daylight
+                    or not snapshot.site_grid_ok
+                    or not snapshot.solar_ok
+                    or not snapshot.soc_ok
+                    or snapshot.solar_w < settings.minimum_solar_w
+                    or snapshot.eligible_count <= 0
+                )
+                if self.is_control_mode and (unsafe or trigger_id == "sunset"):
+                    await self._async_verify_stop(snapshot, settings)
+                    return
+
                 if trigger_id == "grid":
                     await self._async_handle_grid(snapshot, settings)
                 elif trigger_id == "sunset":
@@ -473,11 +490,13 @@ class EcoFlowSurplusController:
             self._record_action(action)
             return
 
-        if decision.desired_count <= 0 and self.command.mask != 0:
-            await self._async_turn_off_all()
-            await self._async_set_command_state(0, int(settings.minimum_rate_w), owned=True)
-            self._record_action("fresh_grid_stopped_force_charge")
+        if decision.desired_count <= 0:
+            await self._async_verify_stop(snapshot, settings)
             return
+
+        self._stop_attempts = 0
+        self._stop_last_at = None
+        self._stop_status = "not_requested"
 
         if decision.desired_count > 0 and decision.mask_change_needed:
             if decision.turn_off_mask:
@@ -585,6 +604,55 @@ class EcoFlowSurplusController:
             {"entity_id": list(self.force_entities)},
             blocking=True,
         )
+
+    def _force_states(self) -> dict[str, str]:
+        return {
+            entity: state.state if (state := self.hass.states.get(entity)) else "missing"
+            for entity in self.force_entities
+        }
+
+    async def _async_verify_stop(
+        self, snapshot: TelemetrySnapshot, settings: ControllerSettings
+    ) -> None:
+        """Request off, then verify on later telemetry; retry at most three times.
+
+        A service return acknowledges a request, not a physical shutdown. Keep
+        the verification status separate from the desired command state.
+        """
+        states = self._force_states()
+        switches_off = all(value == "off" for value in states.values())
+        physical_off = snapshot.shp_power_ok and snapshot.physical_charge_w <= 200.0
+        if switches_off and physical_off:
+            self._stop_status = "confirmed"
+            if self.command.mask or not self.command.owned:
+                await self._async_set_command_state(0, int(settings.minimum_rate_w), owned=True)
+            self._record_action("shutdown_confirmed")
+            return
+
+        if self._stop_status == "confirmed":
+            self._stop_attempts = 0
+            self._stop_last_at = None
+        now = datetime.now(UTC)
+        if self._stop_last_at and (now - self._stop_last_at).total_seconds() < 30:
+            self._record_action("shutdown_awaiting_confirmation")
+            return
+        if self._stop_attempts >= 3:
+            if self._stop_status != "unconfirmed":
+                _LOGGER.error("EcoFlow shutdown unconfirmed after 3 attempts: switches=%s power=%sW valid=%s",
+                              states, snapshot.physical_charge_w, snapshot.shp_power_ok)
+            self._stop_status = "unconfirmed"
+            self._last_error = "Shutdown unconfirmed after three off requests; inspect EcoFlow"
+            self._record_action("shutdown_unconfirmed")
+            return
+
+        self._stop_attempts += 1
+        self._stop_last_at = now
+        self._stop_status = "awaiting_confirmation"
+        _LOGGER.warning("EcoFlow shutdown attempt %s: switches=%s physical_charge=%sW valid=%s",
+                        self._stop_attempts, states, snapshot.physical_charge_w, snapshot.shp_power_ok)
+        await self._async_turn_off_all()
+        await self._async_set_command_state(0, int(settings.minimum_rate_w), owned=True)
+        self._record_action("shutdown_off_requested")
 
     async def _async_switch_mask(self, service: str, mask: int) -> None:
         entities = [
@@ -847,6 +915,8 @@ class EcoFlowSurplusController:
             return "error"
         if self.operating_mode == MODE_OBSERVE:
             return "observing"
+        if self._stop_status in {"awaiting_confirmation", "unconfirmed"}:
+            return "shutdown_" + self._stop_status
         if self.command.mask > 0:
             return "charging"
         if self.control_ready:
@@ -861,6 +931,15 @@ class EcoFlowSurplusController:
             "status": self.status,
             "control_ready": self.control_ready,
             "command": asdict(self.command),
+            "force_charge_states": self._force_states(),
+            "shutdown_verification": {
+                "status": self._stop_status,
+                "attempts": self._stop_attempts,
+                "last_request_at": self._stop_last_at.isoformat() if self._stop_last_at else None,
+                "retry_interval_seconds": 30,
+                "maximum_attempts": 3,
+                "charging_tolerance_w": 200,
+            },
             "last_trigger": self._last_trigger,
             "last_action": self._last_action,
             "last_action_at": self._last_action_at.isoformat() if self._last_action_at else None,

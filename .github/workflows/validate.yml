@@ -32,3 +32,29 @@ jobs:
         uses: hacs/action@main
         with:
           category: integration
+
+  release:
+    needs: [regression-tests, validate-hassfest, validate-hacs]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish validated integration version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          RELEASE_VERSION=$(python -c 'import json; print(json.load(open("custom_components/ecoflow_solar_surplus/manifest.json"))["version"])')
+          RELEASE_TAG="v${RELEASE_VERSION}"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            exit 0
+          fi
+          test -f "RELEASE_NOTES_${RELEASE_VERSION}.md"
+          cd custom_components/ecoflow_solar_surplus
+          zip -r ../../ecoflow_solar_surplus.zip . -x '*__pycache__*' '*.pyc'
+          cd ../..
+          gh release create "$RELEASE_TAG" ecoflow_solar_surplus.zip \
+            --target "$GITHUB_SHA" --title "$RELEASE_TAG" \
+            --notes-file "RELEASE_NOTES_${RELEASE_VERSION}.md"

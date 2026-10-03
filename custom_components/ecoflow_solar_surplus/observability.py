@@ -32,6 +32,8 @@ class EcoFlowSurplusObservability:
         )
         self._unsub = None
         self._history: deque[dict[str, Any]] = deque(maxlen=HISTORY_LIMIT)
+        self._shutdown_history: deque[dict[str, Any]] = deque(maxlen=HISTORY_LIMIT)
+        self._last_shutdown_signature = None
         self._last_command: dict[str, Any] = {}
         self._last_decision: dict[str, Any] | None = None
         self._last_decision_snapshot: dict[str, Any] | None = None
@@ -62,6 +64,9 @@ class EcoFlowSurplusObservability:
             return
 
         history = stored.get("decision_history")
+        for item in stored.get("shutdown_history", [])[-HISTORY_LIMIT:]:
+            if isinstance(item, dict):
+                self._shutdown_history.append(item)
         if isinstance(history, list):
             for item in history[-HISTORY_LIMIT:]:
                 if isinstance(item, dict):
@@ -88,6 +93,7 @@ class EcoFlowSurplusObservability:
         await self._store.async_save(
             {
                 "decision_history": list(self._history),
+                "shutdown_history": list(self._shutdown_history),
                 "last_decision": self._last_decision,
                 "last_decision_snapshot": self._last_decision_snapshot,
                 "last_decision_at": (
@@ -108,6 +114,20 @@ class EcoFlowSurplusObservability:
         snapshot = data.get("snapshot")
         decision = data.get("decision")
         command = data.get("command")
+        verification = data.get("shutdown_verification", {})
+        signature = (verification.get("status"), verification.get("attempts"),
+                     verification.get("last_request_at"))
+        shutdown_changed = bool(record_history and signature != self._last_shutdown_signature)
+        if shutdown_changed:
+            self._last_shutdown_signature = signature
+            self._shutdown_history.append({
+                "timestamp": data.get("last_action_at"),
+                "trigger": data.get("last_trigger"),
+                "verification": dict(verification),
+                "force_charge_states": data.get("force_charge_states"),
+                "snapshot": snapshot,
+                "error": data.get("last_error"),
+            })
 
         self._current_snapshot = dict(snapshot) if isinstance(snapshot, dict) else None
         self._last_error = data.get("last_error")
@@ -146,11 +166,13 @@ class EcoFlowSurplusObservability:
                     "decision": dict(decision),
                     "command_after": dict(current_command),
                     "action": data.get("last_action"),
+                    "force_charge_states": data.get("force_charge_states"),
+                    "shutdown_verification": verification,
                 }
             )
 
         self._last_command = current_command
-        return is_new_grid_decision
+        return is_new_grid_decision or shutdown_changed
 
     @property
     def last_decision_at(self) -> datetime | None:
@@ -239,4 +261,5 @@ class EcoFlowSurplusObservability:
             "charge_power_difference_w": self.charge_power_difference_w,
             "last_decision_snapshot": self._last_decision_snapshot,
             "decision_history": list(self._history),
+            "shutdown_history": list(self._shutdown_history),
         }
