@@ -1,15 +1,12 @@
-# Development state — 0.1.12
+# Development state — 0.1.13
 
-## Problem and evidence
-Installed 0.1.11 recorded command mask 0 while panel grid minus home power measured 1,102 W at night with zero solar. All 50 retained grid decisions held the command. No actual switch states or original failed shutdown were retained. The initiating device/service failure is unknown.
+## Evidence and scope
+0.1.12 corrected force-charge shutdown skipped by an internally off command mask. Subsequent physical observation showed the off command succeeded while cached EcoFlow telemetry remained on/charging; independent site import fell. Reload later showed off/zero charging. The precise native integration reporting delay is not yet diagnosed.
 
-## Change
-Central safety enforcement precedes every control-mode trigger when solar conditions are unsafe, including sunset and reassert. Off requests are verified against live force-charge switches and fresh physical panel power (200 W tolerance). Maximum three requests at least 30 seconds apart per shutdown episode. Pending/unconfirmed state is independent of saved desired command. A later confirmed shutdown followed by recurrence gets a new retry budget. Safe grid decisions requesting charging reset the prior episode. Observe mode performs no writes. No reserve, charge limit or AC channel policy changes.
+## Correction
+Shutdown checks now use HA last_reported timestamps (last_updated fallback), bounded by physical meter age, relative to the latest off request. All force switches and both panel power readings must be fresh/post-command to confirm off. A fresh on switch or a fresh panel pair reporting charging may justify a retry, at least 30 seconds apart, at most three requests. Old or incomplete evidence yields awaiting_fresh_telemetry without retries or a failure error. Later fresh off reports recover through normal grid/watchdog triggers without restarting. HA report time is not proof of transport acknowledgement; source telemetry may still contain cached device values.
 
-Diagnostics include actual switch states and shutdown status/attempt count. Observability retains 50 shutdown-state transitions separately from the 50 grid decisions and persists them through reloads. Retry counters are session scoped, so reload starts a new bounded budget.
+Diagnostics retain per-source timestamps and freshness flags with shutdown event history. Observe mode remains read-only. Reserve settings, limits and channel enablement remain unchanged. No unsupported device refresh services are invoked.
 
-## Validation and next steps
-Run `python -m unittest discover -s tests -v` and required GitHub validations. Controller regression tests execute extracted actual methods with fake HA telemetry/services; they do not simulate the EcoFlow transport. After merge/release and installation, confirm off switches plus physical charging below tolerance. An unconfirmed error requires inspecting actual EcoFlow state and transport logs; never treat service completion as hardware acknowledgement.
-
-## Release pipeline
-Main pushes publish the manifest version with an installable integration ZIP after regression, Hassfest and HACS checks pass. Existing releases are skipped. The release tag targets the validated main commit.
+## Validation and handoff
+46 tests exercise actual controller methods with fake HA states/services, including the stale-report reproduction and automatic confirmation recovery. Run the GitHub regression/Hassfest/HACS checks before merge. Prepared as v0.1.13; release workflow on main publishes ZIP and tag only after all checks succeed. After installation, verify delayed native reports produce a waiting state, then confirmation when new reports arrive. Native EcoFlow transport debugging is a separate remaining investigation if reports stall indefinitely.

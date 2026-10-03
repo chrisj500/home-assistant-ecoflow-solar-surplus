@@ -611,6 +611,50 @@ class EcoFlowSurplusController:
             for entity in self.force_entities
         }
 
+    def _shutdown_telemetry(self, snapshot: TelemetrySnapshot) -> dict[str, Any]:
+        """Describe HA reports relative to the latest off request, not state changes.
+
+        These timestamps establish when HA received a report; they are not an
+        acknowledgement from the EcoFlow hardware or the cloud transport.
+        """
+        reports = {}
+        max_age = self._option_float(OPT_PHYSICAL_METER_MAX_AGE_SECONDS)
+        physical_entities = (
+            self.entry.data[CONF_SHP_GRID_POWER], self.entry.data[CONF_SHP_HOME_POWER]
+        )
+        for entity in (*self.force_entities, *physical_entities):
+            state = self.hass.states.get(entity)
+            reported = getattr(state, "last_reported", getattr(state, "last_updated", None))
+            fresh = bool(reported and _fresh(state, max_age))
+            post_command = bool(fresh and (
+                self._stop_last_at is None or reported > self._stop_last_at
+            ))
+            reports[entity] = {
+                "state": state.state if state else "missing",
+                "last_reported": reported.isoformat() if reported else None,
+                "fresh": fresh,
+                "post_command": post_command,
+            }
+        switches_off = all(
+            reports[e]["post_command"] and reports[e]["state"] == "off"
+            for e in self.force_entities
+        )
+        switch_on = any(
+            reports[e]["post_command"] and reports[e]["state"] == "on"
+            for e in self.force_entities
+        )
+        physical_fresh = snapshot.shp_power_ok and all(
+            reports[e]["post_command"] for e in physical_entities
+        )
+        return {
+            "reports": reports,
+            "switches_confirmed_off": switches_off,
+            "physical_confirmed_off": physical_fresh and snapshot.physical_charge_w <= 200.0,
+            "fresh_charging_evidence": switch_on or (
+                physical_fresh and snapshot.physical_charge_w > 200.0
+            ),
+        }
+
     async def _async_verify_stop(
         self, snapshot: TelemetrySnapshot, settings: ControllerSettings
     ) -> None:
@@ -620,28 +664,34 @@ class EcoFlowSurplusController:
         the verification status separate from the desired command state.
         """
         states = self._force_states()
-        switches_off = all(value == "off" for value in states.values())
-        physical_off = snapshot.shp_power_ok and snapshot.physical_charge_w <= 200.0
-        if switches_off and physical_off:
+        telemetry = self._shutdown_telemetry(snapshot)
+        if telemetry["switches_confirmed_off"] and telemetry["physical_confirmed_off"]:
             self._stop_status = "confirmed"
             if self.command.mask or not self.command.owned:
                 await self._async_set_command_state(0, int(settings.minimum_rate_w), owned=True)
             self._record_action("shutdown_confirmed")
             return
 
-        if self._stop_status == "confirmed":
+        if self._stop_status == "confirmed" and telemetry["fresh_charging_evidence"]:
             self._stop_attempts = 0
             self._stop_last_at = None
         now = datetime.now(UTC)
         if self._stop_last_at and (now - self._stop_last_at).total_seconds() < 30:
             self._record_action("shutdown_awaiting_confirmation")
             return
+        # Do not consume retries or call a shutdown failed based on pre-command
+        # cached values. Later reports are evaluated on normal triggers, so a
+        # telemetry recovery confirms shutdown without reloading the controller.
+        if self._stop_last_at and not telemetry["fresh_charging_evidence"]:
+            self._stop_status = "awaiting_fresh_telemetry"
+            self._record_action("shutdown_awaiting_fresh_telemetry")
+            return
         if self._stop_attempts >= 3:
             if self._stop_status != "unconfirmed":
-                _LOGGER.error("EcoFlow shutdown unconfirmed after 3 attempts: switches=%s power=%sW valid=%s",
+                _LOGGER.error("EcoFlow shutdown unconfirmed by fresh reports after 3 attempts: switches=%s power=%sW valid=%s",
                               states, snapshot.physical_charge_w, snapshot.shp_power_ok)
             self._stop_status = "unconfirmed"
-            self._last_error = "Shutdown unconfirmed after three off requests; inspect EcoFlow"
+            self._last_error = "Fresh telemetry still reports charging after three off requests; inspect EcoFlow"
             self._record_action("shutdown_unconfirmed")
             return
 
@@ -915,7 +965,7 @@ class EcoFlowSurplusController:
             return "error"
         if self.operating_mode == MODE_OBSERVE:
             return "observing"
-        if self._stop_status in {"awaiting_confirmation", "unconfirmed"}:
+        if self._stop_status in {"awaiting_confirmation", "awaiting_fresh_telemetry", "unconfirmed"}:
             return "shutdown_" + self._stop_status
         if self.command.mask > 0:
             return "charging"
@@ -939,6 +989,7 @@ class EcoFlowSurplusController:
                 "retry_interval_seconds": 30,
                 "maximum_attempts": 3,
                 "charging_tolerance_w": 200,
+                "telemetry": self._shutdown_telemetry(self._last_snapshot) if self._last_snapshot else None,
             },
             "last_trigger": self._last_trigger,
             "last_action": self._last_action,
@@ -998,5 +1049,6 @@ def _power_w(state: State | None) -> float | None:
 def _fresh(state: State | None, max_age_seconds: float) -> bool:
     if state is None:
         return False
-    age = (datetime.now(UTC) - state.last_updated).total_seconds()
-    return age <= max_age_seconds
+    reported = getattr(state, "last_reported", state.last_updated)
+    age = (datetime.now(UTC) - reported).total_seconds()
+    return 0 <= age <= max_age_seconds
